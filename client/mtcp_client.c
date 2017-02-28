@@ -34,6 +34,7 @@ static pthread_cond_t send_thread_sig = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t send_thread_sig_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_mutex_t info_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t state_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Connect Function Call (mtcp Version) */
 void mtcp_connect(int socket_fd, struct sockaddr_in *server_addr){
@@ -76,9 +77,9 @@ int mtcp_write(int socket_fd, unsigned char *buf, int buf_len){
 /* Close Function Call (mtcp Version) */
 void mtcp_close(int socket_fd){
 	//change state to 4-way handshake
-	pthread_mutex_lock(&info_mutex);
+	pthread_mutex_lock(&state_mutex);
 	state = HS4;						
-	pthread_mutex_unlock(&info_mutex);
+	pthread_mutex_unlock(&state_mutex);
 	//wake send thread
 	pthread_mutex_lock(&send_thread_sig_mutex);
 	pthread_cond_signal(&send_thread_sig,&send_thread_sig_mutex);
@@ -120,9 +121,9 @@ static void *send_thread(){
 	pthread_cond_wait(&send_thread_sig,&send_thread_sig_mutex);	//wait for app thread
 	pthread_mutex_unlock(&send_thread_sig_mutex);
 	
-	pthread_mutex_lock(&info_mutex);
+	pthread_mutex_lock(&state_mutex);
 	state = HS3;						//tell app thread that send thread is woken
-	pthread_mutex_unlock(&info_mutex);
+	pthread_mutex_unlock(&state_mutex);
 	
 	//3-way handshake starts 
 	unsigned int seq = rand();					//initialize sequence number
@@ -150,9 +151,9 @@ static void *send_thread(){
 	pthread_mutex_unlock(&app_thread_sig_mutex);	
 	
 	//Go into data transfer state
-	pthread_mutex_lock(&info_mutex);
+	pthread_mutex_lock(&state_mutex);
 	state = RW;						
-	pthread_mutex_unlock(&info_mutex);
+	pthread_mutex_unlock(&state_mutex);
 	//wait for app thread write/close
 	while(state!=HS4)				//break loop if 4-way handshake initiated					
 	{
