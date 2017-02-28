@@ -52,14 +52,15 @@ void mtcp_connect(int socket_fd, struct sockaddr_in *server_addr){
 		perror("cannot create receive thread");
 		exit(1);
 	}
-	
-	while(state != HS3)									//wake send thread until handshake starts
-	{
-		pthread_mutex_lock(&send_thread_sig_mutex);
-		pthread_cond_signal(&send_thread_sig,&send_thread_sig_mutex);
-		pthread_mutex_unlock(&send_thread_sig_mutex);		
-	}
-	
+	//change state to 3-way handshake
+	pthread_mutex_lock(&state_mutex);
+	state = HS3;													
+	pthread_mutex_unlock(&state_mutex);
+	//wake send thread
+	pthread_mutex_lock(&send_thread_sig_mutex);
+	pthread_cond_signal(&send_thread_sig,&send_thread_sig_mutex);
+	pthread_mutex_unlock(&send_thread_sig_mutex);		
+	//wait for send thread finish 3-way handshake
 	pthread_mutex_lock(&app_thread_sig_mutex);
 	pthread_cond_wait(&app_thread_sig,&app_thread_sig_mutex);	//wait for send thread
 	pthread_mutex_unlock(&app_thread_sig_mutex);	
@@ -84,7 +85,7 @@ void mtcp_close(int socket_fd){
 	pthread_mutex_lock(&send_thread_sig_mutex);
 	pthread_cond_signal(&send_thread_sig,&send_thread_sig_mutex);
 	pthread_mutex_unlock(&send_thread_sig_mutex);	
-	//waite for send thread finish 4-way handshake
+	//wait for send thread finish 4-way handshake
 	pthread_mutex_lock(&app_thread_sig_mutex);
 	pthread_cond_wait(&app_thread_sig,&app_thread_sig_mutex);	//wait for send thread
 	pthread_mutex_unlock(&app_thread_sig_mutex);	
@@ -117,13 +118,12 @@ unsigned int get_packet_ack(unsigned char *packet)
 
 static void *send_thread(){
 	unsigned char packet[MAX_BUF_SIZE+4];
-	pthread_mutex_lock(&send_thread_sig_mutex);
-	pthread_cond_wait(&send_thread_sig,&send_thread_sig_mutex);	//wait for app thread
-	pthread_mutex_unlock(&send_thread_sig_mutex);
-	
-	pthread_mutex_lock(&state_mutex);
-	state = HS3;						//tell app thread that send thread is woken
-	pthread_mutex_unlock(&state_mutex);
+	while(state!=HS3)												//wait until 3-way handshake initiated
+	{
+		pthread_mutex_lock(&send_thread_sig_mutex);
+		pthread_cond_wait(&send_thread_sig,&send_thread_sig_mutex);	//wait for app thread
+		pthread_mutex_unlock(&send_thread_sig_mutex);		
+	}
 	
 	//3-way handshake starts 
 	unsigned int seq = rand();					//initialize sequence number
@@ -168,6 +168,7 @@ static void *send_thread(){
 			pthread_mutex_unlock(&send_thread_sig_mutex);				
 		}
 	}
+	//4-way handshake starts
 	//send FIN
 	seq = current_ack;
 	create_packet(packet,FIN,seq,NULL,0);
