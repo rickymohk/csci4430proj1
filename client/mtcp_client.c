@@ -49,6 +49,7 @@ static pthread_mutex_t send_thread_sig_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_mutex_t info_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t sendbuf_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 /* Send buffer circular queue functions */
 buffer_t *create_buffer(int size)
 {
