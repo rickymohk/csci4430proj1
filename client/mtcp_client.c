@@ -15,6 +15,7 @@
 #define ACK 4
 #define DATA 5
 
+#define MAX_BUF_SIZE 1024
 #define SEND_BUF_SIZE 268435456
 
 typedef enum {INIT,HS3,RW,HS4,END} state_t;			
@@ -35,7 +36,7 @@ unsigned char last_recv_type;
 unsigned char last_sent_type;
 ssize_t sendto_err = 0;
 
-buffer_t sendbuf;
+buffer_t *sendbuf;
 
 /* ThreadID for Sending Thread and Receiving Thread */
 static pthread_t send_thread_pid;
@@ -95,7 +96,7 @@ int enqueeue(buffer_t *q, unsigned char *src,  int len)
 		{
 			q->front = q->rear;
 		}
-		return 1
+		return 1;
 	}
 }
 
@@ -171,7 +172,7 @@ int mtcp_write(int socket_fd, unsigned char *buf, int buf_len){
 	if(retv)
 	{
 		pthread_mutex_lock(&send_thread_sig_mutex);
-		pthread_cond_signal(&send_thread_sig,&send_thread_sig_mutex);		//wake send thread
+		pthread_cond_signal(&send_thread_sig);		//wake send thread
 		pthread_mutex_unlock(&send_thread_sig_mutex);			
 	}
 	else
@@ -187,12 +188,12 @@ void mtcp_close(int socket_fd){
 	//change state to 4-way handshake
 	if(state!=END)
 	{
-		pthread_mutex_lock(&state_mutex);
+		pthread_mutex_lock(&info_mutex);
 		state = HS4;						
-		pthread_mutex_unlock(&state_mutex);
+		pthread_mutex_unlock(&info_mutex);
 		//wake send thread
 		pthread_mutex_lock(&send_thread_sig_mutex);
-		pthread_cond_signal(&send_thread_sig,&send_thread_sig_mutex);
+		pthread_cond_signal(&send_thread_sig);
 		pthread_mutex_unlock(&send_thread_sig_mutex);	
 		//wait for send thread finish 4-way handshake
 		pthread_mutex_lock(&app_thread_sig_mutex);
@@ -266,14 +267,14 @@ static void *send_thread(){
 				//Send SYN
 				sent_type = SYN;
 				create_packet(packet,SYN,seq,NULL,0);
-				sendto_retv = sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));
+				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
 			}
 			else if(last_type==SYNACK)
 			{
 				//Send ACK
 				sent_type = ACK;
 				create_packet(packet,ACK,seq,NULL,0);
-				sendto_retv = sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));
+				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
 				
 				//Wake app thread cause mtcp_connect() return
 				pthread_mutex_lock(&app_thread_sig_mutex);
@@ -289,12 +290,12 @@ static void *send_thread(){
 				if(!is_empty(sendbuf))			//have data to send
 				{
 					pthread_mutex_lock(&sendbuf_mutex);
-					len = buf_size(send_buf)>1000?1000:buf_size(send_buf);
+					len = buf_size(sendbuf)>1000?1000:buf_size(sendbuf);
 					if(dequeue(sendbuf,data,len))
 					{
 						sent_type = DATA;
 						create_packet(packet,DATA,seq,data,len);
-						sendto_retv = sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));		
+						sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));		
 					}
 					pthread_mutex_unlock(&sendbuf_mutex);
 				}
@@ -308,7 +309,7 @@ static void *send_thread(){
 			else
 			{
 				//Retransmit
-				sendto_retv = sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));
+				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
 			}
 				
 		}
@@ -319,18 +320,18 @@ static void *send_thread(){
 				//Send FIN
 				sent_type = FIN;
 				create_packet(packet,FIN,seq,NULL,0);	
-				sendto_retv = sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));	
+				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));	
 			}
 			else
 			{
 				//Send ACK
 				sent_type = ACK;
 				create_packet(packet,ACK,seq,NULL,0);	
-				sendto_retv = sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));	
+				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));	
 				
 				//Wake app thread cause mtcp_close() return
 				pthread_mutex_lock(&app_thread_sig_mutex);
-				pthread_cond_signal(&app_thread_sig,&app_thread_sig_mutex);		
+				pthread_cond_signal(&app_thread_sig);		
 				pthread_mutex_unlock(&app_thread_sig_mutex);		
 				
 				break;
@@ -357,7 +358,7 @@ static void *receive_thread(){
 	do
 	{
 		//Monitor Socket
-		len = recvfrom(sockfd,(void *)packet,MAX_BUF_SIZE+4,NULL,(struct sockaddr *)addr,sizeof(addr));
+		len = recvfrom(sockfd,(void *)packet,MAX_BUF_SIZE+4,0,NULL,NULL);
 		current_type = get_packet_type(packet);
 		
 		//Check & update state

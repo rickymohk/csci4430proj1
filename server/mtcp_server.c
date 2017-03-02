@@ -81,7 +81,7 @@ int enqueeue(buffer_t *q, unsigned char *src,  int len)
 		{
 			q->front = q->rear;
 		}
-		return 1
+		return 1;
 	}
 }
 
