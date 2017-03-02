@@ -14,6 +14,7 @@
 #define ACK 4
 #define DATA 5
 
+#define MAX_BUF_SIZE 1024
 #define RECV_BUF_SIZE 268435456
 
 typedef enum {INIT,HS3,RW,HS4,END} state_t;			
