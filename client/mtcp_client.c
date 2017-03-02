@@ -28,8 +28,13 @@ typedef struct
 /* -------------------- Global Variables -------------------- */
 int sockfd;
 struct sockaddr_in *addr;
+
 state_t state;
 unsigned int current_ack;
+unsigned char last_recv_type;
+unsigned char last_sent_type;
+ssize_t sendto_err = 0;
+
 buffer_t sendbuf;
 
 /* ThreadID for Sending Thread and Receiving Thread */
@@ -43,8 +48,7 @@ static pthread_cond_t send_thread_sig = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t send_thread_sig_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_mutex_t info_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_mutex_t state_mutex = PTHREAD_MUTEX_INITIALIZER;
-
+static pthread_mutex_t sendbuf_mutex = PTHREAD_MUTEX_INITIALIZER;
 /* Send buffer circular queue functions */
 buffer_t *create_buffer(int size)
 {
@@ -76,6 +80,7 @@ int buf_size(buffer_t *q)
 int enqueeue(buffer_t *q, unsigned char *src,  int len)
 {
 	if(is_full(q))return 0;
+	else if(len > buf_size(q))return 0;
 	else
 	{
 		q->rear = (q->rear + len)%q->capacity;
@@ -105,6 +110,7 @@ int dequeue(buffer_t *q,unsigned char *dst, int len)
 /* Connect Function Call (mtcp Version) */
 void mtcp_connect(int socket_fd, struct sockaddr_in *server_addr){
 	srand((unsigned)time(NULL));
+	current_ack = rand();
 	sockfd = socket_fd;
 	addr = server_addr;
 	state = INIT;
@@ -127,30 +133,46 @@ void mtcp_connect(int socket_fd, struct sockaddr_in *server_addr){
 		exit(1);
 	}
 	//change state to 3-way handshake
-	pthread_mutex_lock(&state_mutex);
+	pthread_mutex_lock(&info_mutex);
 	state = HS3;													
-	pthread_mutex_unlock(&state_mutex);
-	//wake send thread
+	pthread_mutex_unlock(&info_mutex);
+	
+	//wake send thread in case it is waiting
 	pthread_mutex_lock(&send_thread_sig_mutex);
-	pthread_cond_signal(&send_thread_sig,&send_thread_sig_mutex);
+	pthread_cond_signal(&send_thread_sig);
 	pthread_mutex_unlock(&send_thread_sig_mutex);		
+	
 	//wait for send thread finish 3-way handshake
 	pthread_mutex_lock(&app_thread_sig_mutex);
-	pthread_cond_wait(&app_thread_sig,&app_thread_sig_mutex);	//wait for send thread
+	pthread_cond_wait(&app_thread_sig,&app_thread_sig_mutex);
 	pthread_mutex_unlock(&app_thread_sig_mutex);	
 	
+	//change state to read/write
+	pthread_mutex_lock(&info_mutex);
+	state = RW;													
+	pthread_mutex_unlock(&info_mutex);	
 	return;
 }
 
 /* Write Function Call (mtcp Version) */
 int mtcp_write(int socket_fd, unsigned char *buf, int buf_len){
 	if(state==HS4)return 0;
-	if(state==END)return -1;
-	if(!enqueeue(sendbuf,buf,buf_len))return -1;
+	if(sendto_err==-1)return -1;
+	pthread_mutex_lock(&sendbuf_mutex);
+	int retv = enqueeue(sendbuf,buf,buf_len);
+	pthread_mutex_unlock(&sendbuf_mutex);
 	
-	pthread_mutex_lock(&send_thread_sig_mutex);
-	pthread_cond_signal(&send_thread_sig,&send_thread_sig_mutex);		//wake send thread
-	pthread_mutex_unlock(&send_thread_sig_mutex);	
+	if(retv)
+	{
+		pthread_mutex_lock(&send_thread_sig_mutex);
+		pthread_cond_signal(&send_thread_sig,&send_thread_sig_mutex);		//wake send thread
+		pthread_mutex_unlock(&send_thread_sig_mutex);			
+	}
+	else
+	{
+		return 0;
+	}
+
 	return buf_len;
 }
 
@@ -171,10 +193,11 @@ void mtcp_close(int socket_fd){
 		pthread_cond_wait(&app_thread_sig,&app_thread_sig_mutex);	//wait for send thread
 		pthread_mutex_unlock(&app_thread_sig_mutex);	
 		
+		state = END;
 		pthread_join(send_thread_pid,NULL);
 		pthread_join(recv_thread_pid,NULL);
 		close(socket_fd);	
-		state = END;
+		
 	}
 
 	return;
@@ -205,101 +228,116 @@ static void *send_thread(){
 	unsigned char packet[MAX_BUF_SIZE+4];
 	unsigned char data[MAX_BUF_SIZE];
 	int len;
-//-------------------------------------Connect----------------------------------------------------
-	pthread_mutex_lock(&send_thread_sig_mutex);
-	while(state!=HS3)												//wait until 3-way handshake initiated
+	unsigned int last_ack;
+	unsigned int seq;					
+	struct timespec abstime;
+	state_t current_state;
+	unsigned char last_type = 0xff;
+	unsigned char sent_type = 0xff;
+	ssize_t sendto_retv = 0;
+	do
 	{
-		pthread_cond_wait(&send_thread_sig,&send_thread_sig_mutex);	//wait for app thread
-	}
-	pthread_mutex_unlock(&send_thread_sig_mutex);		
-	
-	//3-way handshake starts 
-	unsigned int seq = rand();					//initialize sequence number
-	struct timespect abstime;
-	//send a SYN
-	create_packet(packet,SYN,seq,NULL,0);
-	sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));
-	
-	clock_gettime(CLOCK_REALTIME,&abstime);
-	abstime.tv_sec++;							//generate timespec for timedwait
-	
-	pthread_mutex_lock(&send_thread_sig_mutex);
-	while(pthread_cond_timedwait(&send_thread_sig,&send_thread_sig_mutex,&abstime)==ETIMEDOUT)	//wait for recv thread
-	{
+		//Sleep
 		clock_gettime(CLOCK_REALTIME,&abstime);
-		abstime.tv_sec++;			
-		sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));	//timeout, resend SYN
-	}
-	pthread_mutex_unlock(&send_thread_sig_mutex);	
-	//send a ACK
-	seq = current_ack;
-	create_packet(packet,ACK,seq,NULL,0);
-	sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));
-	
-	pthread_mutex_lock(&app_thread_sig_mutex);
-	pthread_cond_signal(&app_thread_sig,&app_thread_sig_mutex);		//wake up app thread cause mtcp_connect() return
-	pthread_mutex_unlock(&app_thread_sig_mutex);	
-	
-	
-//----------------------------------------Read/Write---------------------------------------	
-	//Go into data transfer state
-	pthread_mutex_lock(&state_mutex);
-	state = RW;						
-	pthread_mutex_unlock(&state_mutex);
-	//wait for app thread write/close
-	pthread_mutex_lock(&send_thread_sig_mutex);
-	while(state!=HS4)				//break loop if 4-way handshake initiated					
-	{
-		if(!is_empty(sendbuf))			//have data to send
+		abstime.tv_sec++;							
+		pthread_mutex_lock(&send_thread_sig_mutex);
+		pthread_cond_timedwait(&send_thread_sig,&send_thread_sig_mutex,&abstime);
+		pthread_mutex_unlock(&send_thread_sig_mutex);
+		
+		//Check state
+		last_ack = seq;
+		pthread_mutex_lock(&info_mutex);
+		last_type = last_recv_type;
+		current_state = state;
+		seq = current_ack;
+		pthread_mutex_unlock(&info_mutex);
+		
+		//Send packet
+		if(current_state==HS3)
 		{
-			len = buf_size(send_buf)>1000?1000:buf_size(send_buf);
-			if(dequeue(sendbuf,data,len))
+			if(last_type==0xff)
 			{
-				seq = current_ack;
-				create_packet(packet,DATA,seq,data,len);
-				clock_gettime(CLOCK_REALTIME,&abstime);
-				abstime.tv_sec++;							//generate timespec for timedwait			
-				while(pthread_cond_timedwait(&send_thread_sig,&send_thread_sig_mutex,&abstime)==ETIMEDOUT)	//wait for recv thread
-				{
-					clock_gettime(CLOCK_REALTIME,&abstime);
-					abstime.tv_sec++;	
-					sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));	//timeout, resend SYN
-				}				
+				//Send SYN
+				sent_type = SYN;
+				create_packet(packet,SYN,seq,NULL,0);
+				sendto_retv = sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));
+			}
+			else if(last_type==SYNACK)
+			{
+				//Send ACK
+				sent_type = ACK;
+				create_packet(packet,ACK,seq,NULL,0);
+				sendto_retv = sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));
+				
+				//Wake app thread cause mtcp_connect() return
+				pthread_mutex_lock(&app_thread_sig_mutex);
+				pthread_cond_signal(&app_thread_sig);	
+				pthread_mutex_unlock(&app_thread_sig_mutex);					
 			}
 		}
-		else			//buffer empty
-		{			
-			pthread_cond_wait(&send_thread_sig,&send_thread_sig_mutex);	//wait for app thread			
+		else if(current_state==RW)
+		{
+			if( (last_type==SYNACK) || ((last_type==ACK) && (last_ack!=seq)) )	//first packet or new packet
+			{
+				//Fetch new packet from buffer
+				if(!is_empty(sendbuf))			//have data to send
+				{
+					pthread_mutex_lock(&sendbuf_mutex);
+					len = buf_size(send_buf)>1000?1000:buf_size(send_buf);
+					if(dequeue(sendbuf,data,len))
+					{
+						sent_type = DATA;
+						create_packet(packet,DATA,seq,data,len);
+						sendto_retv = sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));		
+					}
+					pthread_mutex_unlock(&sendbuf_mutex);
+				}
+				else			//buffer empty, sleep until app thread mtcp_write() called
+				{	
+					pthread_mutex_lock(&send_thread_sig_mutex);
+					pthread_cond_wait(&send_thread_sig,&send_thread_sig_mutex);		
+					pthread_mutex_unlock(&send_thread_sig_mutex);
+				}
+			}
+			else
+			{
+				//Retransmit
+				sendto_retv = sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));
+			}
+				
 		}
-	}
-	pthread_mutex_unlock(&send_thread_sig_mutex);				
-	
-	
-	
-//-------------------------------------------Close---------------------------------------
-	//4-way handshake starts
-	//send FIN
-	seq = current_ack;
-	create_packet(packet,FIN,seq,NULL,0);
-	sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));	
-	clock_gettime(CLOCK_REALTIME,&abstime);
-	abstime.tv_sec++;														//generate timespec for timedwait	
-	pthread_mutex_lock(&send_thread_sig_mutex);
-	while(pthread_cond_timedwait(&send_thread_sig,&send_thread_sig_mutex,&abstime)==ETIMEDOUT)	//wait for recv thread
-	{
-		clock_gettime(CLOCK_REALTIME,&abstime);
-		abstime.tv_sec++;	
-		sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));	//timeout, resend FIN
-	}
-	pthread_mutex_unlock(&send_thread_sig_mutex);	
-	//send ACK
-	seq = current_ack;
-	create_packet(packet,ACK,seq,NULL,0);
-	sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));
-	
-	pthread_mutex_lock(&app_thread_sig_mutex);
-	pthread_cond_signal(&app_thread_sig,&app_thread_sig_mutex);		//wake up app thread cause mtcp_close() return
-	pthread_mutex_unlock(&app_thread_sig_mutex);		
+		else if(current_state==HS4)
+		{
+			if(last_type!=FINACK)
+			{
+				//Send FIN
+				sent_type = FIN;
+				create_packet(packet,FIN,seq,NULL,0);	
+				sendto_retv = sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));	
+			}
+			else
+			{
+				//Send ACK
+				sent_type = ACK;
+				create_packet(packet,ACK,seq,NULL,0);	
+				sendto_retv = sento(sockfd,(void *)packet,4,NULL,(struct sockaddr *)addr,sizeof(addr));	
+				
+				//Wake app thread cause mtcp_close() return
+				pthread_mutex_lock(&app_thread_sig_mutex);
+				pthread_cond_signal(&app_thread_sig,&app_thread_sig_mutex);		
+				pthread_mutex_unlock(&app_thread_sig_mutex);		
+				
+				break;
+			}
+			
+		}
+		
+		//Update state
+		pthread_mutex_lock(&info_mutex);
+		sendto_err = sendto_retv;
+		last_sent_type = sent_type;
+		pthread_mutex_unlock(&info_mutex);	
+	}while(current_state!=END);
 	
 	pthread_exit(NULL);
 }
@@ -307,51 +345,32 @@ static void *send_thread(){
 static void *receive_thread(){
 	unsigned char packet[MAX_BUF_SIZE+4];
 	size_t len;
-//----------------------------------Connect---------------------------------------
-	//Monitor for SYNACK
+	unsigned char last_type = 0xff;
+	unsigned char current_type = 0xff;
+	state_t current_state;
 	do
 	{
-		len = recvfrom(sockfd,(void *)packet,MAX_BUF_SIZE+4,NULL,(struct sockaddr *)addr,sizeof(addr));		
-	}while(get_packet_type(packet)!=SYNACK);
-
-	//SYNACK received
-	pthread_mutex_lock(&info_mutex);
-	current_ack = get_packet_ack(packet);					//get ack number from recv packet
-	pthread_mutex_unlock(&info_mutex);
-	
-	pthread_mutex_lock(&send_thread_sig_mutex);
-	pthread_cond_signal(&send_thread_sig,&app_thread_sig_mutex);		//wake send thread
-	pthread_mutex_unlock(&send_thread_sig_mutex);
-
-
-//------------------------------Read/Write----------------------------------------------	
-	//Monitor for ACK and FINACK
-	do
-	{
+		//Monitor Socket
 		len = recvfrom(sockfd,(void *)packet,MAX_BUF_SIZE+4,NULL,(struct sockaddr *)addr,sizeof(addr));
-		if(get_packet_type(packet)==ACK)
+		current_type = get_packet_type(packet);
+		
+		//Check & update state
+		pthread_mutex_lock(&info_mutex);
+		current_state = state;
+		last_recv_type = current_type;
+		last_type = last_sent_type;
+		current_ack = get_packet_ack(packet);
+		pthread_mutex_unlock(&info_mutex);
+		
+		//wake send thread
+		if((last_type==SYN && current_type==SYNACK)||(last_type==DATA && current_type==ACK)||(last_type==FIN && current_type==FINACK))
 		{
-			pthread_mutex_lock(&info_mutex);
-			current_ack = get_packet_ack(packet);					//get ack number from recv packet
-			pthread_mutex_unlock(&info_mutex);
-			
 			pthread_mutex_lock(&send_thread_sig_mutex);
-			pthread_cond_signal(&send_thread_sig,&app_thread_sig_mutex);		//wake send thread
-			pthread_mutex_unlock(&send_thread_sig_mutex);			
+			pthread_cond_signal(&send_thread_sig);
+			pthread_mutex_unlock(&send_thread_sig_mutex);				
 		}
-	}while(get_packet_type(packet)!=FINACK);
-	
-	
-//------------------------------Close----------------------------------------------------
-	//FINACK received
-	pthread_mutex_lock(&info_mutex);
-	current_ack = get_packet_ack(packet);					//get ack number from recv packet
-	pthread_mutex_unlock(&info_mutex);
-	
-	pthread_mutex_lock(&send_thread_sig_mutex);
-	pthread_cond_signal(&send_thread_sig,&app_thread_sig_mutex);		//wake send thread
-	pthread_mutex_unlock(&send_thread_sig_mutex);	
-	
+	}while(current_type!=FINACK);
+
 	pthread_exit(NULL);
 }
 
