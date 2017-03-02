@@ -34,12 +34,12 @@ static pthread_cond_t send_thread_sig = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t send_thread_sig_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_mutex_t info_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t recvbuf_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* The Sending Thread and Receive Thread Function */
 static void *send_thread();
 static void *receive_thread();
 
-static pthread_mutex_t sendbuf_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Receive buffer circular queue functions */
 buffer_t *create_buffer(int size)
