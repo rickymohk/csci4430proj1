@@ -117,7 +117,7 @@ int dequeue(buffer_t *q,unsigned char *dst, int len)
 /* Connect Function Call (mtcp Version) */
 void mtcp_connect(int socket_fd, struct sockaddr_in *server_addr){
 	srand((unsigned)time(NULL));
-	current_ack = rand();
+	current_ack = rand() & 0x0fffffff;
 	sockfd = socket_fd;
 	addr = server_addr;
 	state = INIT;
