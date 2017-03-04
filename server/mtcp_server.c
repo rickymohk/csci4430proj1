@@ -24,6 +24,19 @@ typedef struct
 	int capacity;
 	unsigned char *array;
 }buffer_t;
+
+/* -------------------- Global Variables -------------------- */
+int sockfd;
+struct sockaddr_in *addr;
+
+state_t state;
+unsigned int current_ack;
+unsigned char last_recv_type;
+unsigned char last_sent_type;
+ssize_t recv_err = 0;
+
+buffer_t *recvbuf;
+
 /* ThreadID for Sending Thread and Receiving Thread */
 static pthread_t send_thread_pid;
 static pthread_t recv_thread_pid;
@@ -70,7 +83,7 @@ int buf_size(buffer_t *q)
 	return (q->capacity - q->rear + q->front +1)%q->capacity;
 }
 
-int enqueeue(buffer_t *q, unsigned char *src,  int len)
+int enqueue(buffer_t *q, unsigned char *src,  int len)
 {
 	if(is_full(q))return 0;
 	else if(len > buf_size(q))return 0;
@@ -100,17 +113,35 @@ int dequeue(buffer_t *q,unsigned char *dst, int len)
 	}
 }
 
-void mtcp_accept(int socket_fd, struct sockaddr_in *server_addr){
+void mtcp_accept(int socket_fd, struct sockaddr_in *client_addr){
+	sockfd = socket_fd;
+	addr = client_addr;
+	state = INIT;
+	recvbuf = create_buffer(RECV_BUF_SIZE);
 
 }
-
 int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
+
+	//wake send thread in case it is waiting
+	pthread_mutex_lock(&send_thread_sig);
+	pthread_cond_signal(&send_thread_sig);
+	pthread_mutex_unlock(&send_thread_sig);
+
+	//wait for send thread wake signal
+	pthread_mutex_lock(&app_thread_sig);
+	pthread_cond_wait(&app_thread_sig, &app_thread_sig_mutex);
+	pthread_mutex_unlock(&app_thread_sig);
+
+	return;
 
 }
 
 void mtcp_close(int socket_fd){
-
+	pthread_join(recv_thread_pid,NULL);
+	pthread_join(send_thread_pid,NULL);
+	close(socket_fd);
 }
+
 
 void create_packet(unsigned char *packet, unsigned char type, unsigned int seq, unsigned char *data, size_t data_len)
 {

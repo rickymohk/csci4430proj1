@@ -84,7 +84,7 @@ int buf_size(buffer_t *q)
 	return (q->capacity - q->rear + q->front +1)%q->capacity;
 }
 
-int enqueeue(buffer_t *q, unsigned char *src,  int len)
+int enqueue(buffer_t *q, unsigned char *src,  int len)
 {
 	if(is_full(q))return 0;
 	else if(len > buf_size(q))return 0;
@@ -166,7 +166,7 @@ int mtcp_write(int socket_fd, unsigned char *buf, int buf_len){
 	if(state==HS4)return 0;
 	if(sendto_err==-1)return -1;
 	pthread_mutex_lock(&sendbuf_mutex);
-	int retv = enqueeue(sendbuf,buf,buf_len);
+	int retv = enqueue(sendbuf,buf,buf_len);
 	pthread_mutex_unlock(&sendbuf_mutex);
 	
 	if(retv)
@@ -201,8 +201,8 @@ void mtcp_close(int socket_fd){
 		pthread_mutex_unlock(&app_thread_sig_mutex);	
 		
 		state = END;
-		pthread_join(send_thread_pid,NULL);
 		pthread_join(recv_thread_pid,NULL);
+		pthread_join(send_thread_pid,NULL);
 		close(socket_fd);	
 		
 	}
