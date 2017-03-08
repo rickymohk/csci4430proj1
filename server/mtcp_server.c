@@ -33,7 +33,7 @@ state_t state;
 unsigned int current_ack;
 unsigned char last_recv_type;
 unsigned char last_sent_type;
-ssize_t recv_err = 0;
+ssize_t recvfrom_err = 0;
 
 buffer_t *recvbuf;
 
@@ -114,14 +114,51 @@ int dequeue(buffer_t *q,unsigned char *dst, int len)
 }
 
 void mtcp_accept(int socket_fd, struct sockaddr_in *client_addr){
+	srand((unsigned)time(NULL));
+	current_ack = rand() & 0x0fffffff;
 	sockfd = socket_fd;
 	addr = client_addr;
 	state = INIT;
 	recvbuf = create_buffer(RECV_BUF_SIZE);
 
+	if(!recvbuf)
+	{
+		perror("cannot create send buffer");
+		exit(1);
+	}
+
+	if(pthread_create(&send_thread_pid,NULL,send_thread,NULL)!=0)
+	{
+		perror("cannot create send thread");
+		exit(1);
+	}
+
+	if(pthread_create(&recv_thread_pid,NULL,receive_thread,NULL)!=0)
+	{
+		perror("cannot create receive thread");
+		exit(1);
+	}
+
+	//change state to 3-way handshake
+	pthread_mutex_lock(&info_mutex);
+	state = HS3;													
+	pthread_mutex_unlock(&info_mutex);
+
+	//wait until wake signal from send thread
+	pthread_mutex_lock(&app_thread_sig_mutex);
+	pthread_cond_wait(&app_thread_sig,&app_thread_sig_mutex);
+	pthread_mutex_unlock(&app_thread_sig_mutex);
+
+	//change state to read/write
+	pthread_mutex_lock(&info_mutex);
+	state = RW;													
+	pthread_mutex_unlock(&info_mutex);
+
+	return;
 }
 int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
-
+	if(state==HS4)return 0;
+	if(recvfrom_err==-1)return -1;
 	//wake send thread in case it is waiting
 	pthread_mutex_lock(&send_thread_sig);
 	pthread_cond_signal(&send_thread_sig);
@@ -132,14 +169,17 @@ int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
 	pthread_cond_wait(&app_thread_sig, &app_thread_sig_mutex);
 	pthread_mutex_unlock(&app_thread_sig);
 
-	return;
+	return buf_len;
 
 }
 
 void mtcp_close(int socket_fd){
+
 	pthread_join(recv_thread_pid,NULL);
 	pthread_join(send_thread_pid,NULL);
 	close(socket_fd);
+
+	return;
 }
 
 
@@ -165,7 +205,7 @@ unsigned int get_packet_seq(unsigned char *packet)
 }
 
 static void *send_thread(){
-
+	
 }
 
 static void *receive_thread(){

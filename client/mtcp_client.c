@@ -128,7 +128,6 @@ void mtcp_connect(int socket_fd, struct sockaddr_in *server_addr){
 		exit(1);
 	}
 
-	
 	if(pthread_create(&send_thread_pid,NULL,send_thread,NULL)!=0)
 	{
 		perror("cannot create send thread");
@@ -139,6 +138,7 @@ void mtcp_connect(int socket_fd, struct sockaddr_in *server_addr){
 		perror("cannot create receive thread");
 		exit(1);
 	}
+
 	//change state to 3-way handshake
 	pthread_mutex_lock(&info_mutex);
 	state = HS3;													
