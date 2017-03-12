@@ -205,9 +205,86 @@ unsigned int get_packet_seq(unsigned char *packet)
 }
 
 static void *send_thread(){
-	
+	unsigned char packet[MAX_BUF_SIZE+4];
+	unsigned char data[MAX_BUF_SIZE];
+	int len;
+	unsigned int last_ack;
+	unsigned int seq;					
+	struct timespec abstime;
+	state_t current_state;
+	unsigned char last_type = 0xff;
+	unsigned char sent_type = 0xff;
+	ssize_t sendto_retv = 0;
+	do
+	{
+		//Sleep						
+		pthread_mutex_lock(&send_thread_sig_mutex);
+		pthread_cond_wait(&send_thread_sig,&send_thread_sig_mutex);
+		pthread_mutex_unlock(&send_thread_sig_mutex);
+		
+		//Check state
+		last_ack = seq;
+		pthread_mutex_lock(&info_mutex);
+		last_type = last_recv_type;
+		current_state = state;
+		seq = current_ack;
+		pthread_mutex_unlock(&info_mutex);
+
+		if(current_state==HS3)
+		{
+			if(last_type==0xff)
+			{
+				//Send SYN
+				sent_type = SYN;
+				create_packet(packet,SYN,seq,NULL,0);
+				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
+			}
+			else if(last_type==SYNACK)
+			{
+				//Send ACK
+				sent_type = ACK;
+				create_packet(packet,ACK,seq,NULL,0);
+				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
+				
+				//Wake app thread cause mtcp_connect() return
+				pthread_mutex_lock(&app_thread_sig_mutex);
+				pthread_cond_signal(&app_thread_sig);	
+				pthread_mutex_unlock(&app_thread_sig_mutex);					
+			}
+		}
+
+	}();
 }
 
 static void *receive_thread(){
+	unsigned char packet[MAX_BUF_SIZE+4];
+	size_t len;
+	unsigned char last_type =n 0xff;
+	unsigned char current_type = 0xff;
+	state_t current_state;
+	do
+	{
+		//Monitor Socket
+		len = recvfrom(sockfd,(void *)packet,MAX_BUF_SIZE+4,0,NULL,NULL);
+		current_type = get_packet_type(packet);
+		
+		//Check & update state
+		pthread_mutex_lock(&info_mutex);
+		current_state = state;
+		last_recv_type = current_type;
+		last_type = last_sent_type;
+		current_ack = get_packet_ack(packet);
+		pthread_mutex_unlock(&info_mutex);
+		
+		//wake send thread
+		if((current_type==SYN)||(last_type==ACK && current_type==DATA))
+		{
+			pthread_mutex_lock(&send_thread_sig_mutex);
+			pthread_cond_signal(&send_thread_sig);
+			pthread_mutex_unlock(&send_thread_sig_mutex);				
+		}
 
+	}while(last_type!=FINACK && current_type!=ACK);
+
+	pthread_exit(NULL);
 }
