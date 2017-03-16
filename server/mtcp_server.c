@@ -35,6 +35,7 @@ socklen_t addrlen;
 struct sockaddr_in *client;
 state_t state=NIL;
 unsigned int current_ack;
+unsigned int last_ack;
 unsigned char last_recv_type;
 unsigned char last_sent_type;
 ssize_t recvfrom_err = 0;
@@ -91,7 +92,7 @@ int buf_size(buffer_t *q)
 
 int enqueue(buffer_t *q, unsigned char *src,  int len)
 {	
-	if(DEBUG)printf("is_full=%d,buf_size=%d,capacity=%d\n",is_full(q),buf_size(q),q->capacity);
+	if(DEBUG)printf("buf_size=%d\n",buf_size(q));
 	if(is_full(q))return 0;
 	else if(len > (q->capacity-buf_size(q)))return 0;
 	else
@@ -168,7 +169,7 @@ void mtcp_accept(int socket_fd, struct sockaddr_in *client_addr){
 int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
 	if(recvfrom_err==-1 || state==NIL || state==END)return -1;
 	if(DEBUG)printf("mtcp_read() no error\n");
-	if(is_empty(recvbuf))
+	while(is_empty(recvbuf))
 	{
 		if(DEBUG)printf("reading empty buffer, current_state=%d\n",state);
 		if(state==HS4)
@@ -182,10 +183,11 @@ int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
 			//wait for send thread wake signal
 			pthread_mutex_lock(&app_thread_sig_mutex);
 			pthread_cond_wait(&app_thread_sig, &app_thread_sig_mutex);
-			pthread_mutex_unlock(&app_thread_sig_mutex);
+			pthread_mutex_unlock(&app_thread_sig_mutex);		
 		}
 	}
 	int len = 0;
+
 	if(!is_empty(recvbuf))
 	{
 		//copy data from internal buff
@@ -204,7 +206,7 @@ int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
 		pthread_mutex_unlock(&recvbuf_mutex);		
 	}
 	
-	if(DEBUG)printf("mtcp_read return %d\n",len);
+	if(DEBUG)printf("mtcp_read() return %d\n",len);
 	return len;
 
 	
@@ -255,30 +257,33 @@ static void *send_thread(){
 	unsigned char packet[MAX_BUF_SIZE+4];
 //	int len;
 //	unsigned int last_ack;
-	unsigned int seq;					
+	unsigned int seq, last_seq;					
 	state_t current_state;
 	unsigned char last_type = -1;
 	unsigned char sent_type = -1;
 	ssize_t sendto_retv = 0;
+	pthread_mutex_lock(&send_thread_sig_mutex);			//sig_mutext place outside the loop since send thread should be waken only if it is waitng. otherwise important wake may be lost
 	do
 	{
 		//Sleep						
-		pthread_mutex_lock(&send_thread_sig_mutex);
+		
 		pthread_cond_wait(&send_thread_sig,&send_thread_sig_mutex);
-		pthread_mutex_unlock(&send_thread_sig_mutex);
+		
 		
 		//Check state
 		pthread_mutex_lock(&info_mutex);
 		last_type = last_recv_type;
 		current_state = state;
+		last_seq = last_ack;
 		seq = current_ack;
 		pthread_mutex_unlock(&info_mutex);
-
+		if(DEBUG)printf("send thread waken, current_state=%d, last_type=%d\n",current_state,last_type);
 		if(current_state==HS3 && last_type==SYN)
 		{
 			//Send SYNACK
 			if(DEBUG)printf("send SYNACK\n");
 			sent_type = SYNACK;
+			seq++;
 			create_packet(packet,SYNACK,seq,NULL,0);
 			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)client,addrlen);
 			if(DEBUG)printf("sento_retv=%d,errno=%d\n",sendto_retv,errno);
@@ -301,20 +306,25 @@ static void *send_thread(){
 		else if(current_state==RW && last_type==DATA)
 		{
 			//Send ACK
-			if(DEBUG)printf("send ACK\n");
+			if(DEBUG)printf("send ACK=%d\n",seq);
 			sent_type = ACK;
 			create_packet(packet,ACK,seq,NULL,0);
 			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)client,addrlen);
 
-			//wake app thread in case read() is blocking
-			pthread_mutex_lock(&app_thread_sig_mutex);
-			pthread_cond_signal(&app_thread_sig);	
-			pthread_mutex_unlock(&app_thread_sig_mutex);
+			//wake app thread in case read() is blocking, only if acknowledging new DATA. Reack should not wake
+			if(last_seq!=seq)
+			{
+				pthread_mutex_lock(&app_thread_sig_mutex);
+				pthread_cond_signal(&app_thread_sig);	
+				pthread_mutex_unlock(&app_thread_sig_mutex);				
+			}
+
 		}
 		else if(current_state==HS4 && last_type==FIN)
 		{
 			if(DEBUG)printf("send FINACK\n");
 			sent_type = FINACK;
+			seq++;
 			create_packet(packet,FINACK,seq,NULL,0);
 			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)client,addrlen);
 		}
@@ -323,6 +333,7 @@ static void *send_thread(){
 		pthread_mutex_unlock(&info_mutex);
 
 	}while(sent_type!=FINACK);
+	pthread_mutex_unlock(&send_thread_sig_mutex);
 	if(DEBUG)printf("send thread end\n");
 	pthread_exit(NULL);
 }
@@ -345,13 +356,14 @@ static void *receive_thread(){
 		len = recvfrom(sockfd,(void *)packet,MAX_BUF_SIZE+4,0,(struct sockaddr *)client,&addrlen);
 		current_type = get_packet_type(packet);
 		seq = get_packet_seq(packet);
-		if(DEBUG)printf("received type: %d\n", current_type);
+		if(DEBUG)printf("received type: %d, seq=%d\n", current_type,seq);
 		//Check & update state
 		pthread_mutex_lock(&info_mutex);
 		current_state = state;
 		last_recv_type = current_type;
 		last_type = last_sent_type;
-		current_ack = seq + len -3;
+		last_ack = current_ack;
+		current_ack = seq + len - 4;
 		recvfrom_err = len;
 		pthread_mutex_unlock(&info_mutex);
 		
@@ -384,8 +396,11 @@ static void *receive_thread(){
 		else if(current_state==RW && (last_type==ACK || last_type==SYNACK) && current_type==DATA)		//Read data
 		{
 			if(DEBUG)printf("received RW data with len=%d\n",len);
-			int retv=enqueue(recvbuf,&packet[4],len-4);
-			if(DEBUG)printf("enqueue retv=%d\n",retv);
+			if(current_ack != last_ack)		//write data to buffer only if the recv data is new (in case of ACK lost, data will be duplicate)
+			{
+				int retv=enqueue(recvbuf,&packet[4],len-4);
+				if(DEBUG)printf("enqueue retv=%d\n",retv);
+			}
 			pthread_mutex_lock(&send_thread_sig_mutex);
 			pthread_cond_signal(&send_thread_sig);
 			pthread_mutex_unlock(&send_thread_sig_mutex);	

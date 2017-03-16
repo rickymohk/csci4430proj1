@@ -92,7 +92,7 @@ int buf_size(buffer_t *q)
 	
 int enqueue(buffer_t *q, unsigned char *src,  int len)
 {	
-	if(DEBUG)printf("is_full=%d,buf_size=%d,capacity=%d\n",is_full(q),buf_size(q),q->capacity);
+	if(DEBUG)printf("buf_size=%d\n",buf_size(q));
 	if(is_full(q))return 0;
 	else if(len > (q->capacity-buf_size(q)))return 0;
 	else
@@ -198,8 +198,20 @@ void mtcp_close(int socket_fd){
 	//change state to 4-way handshake
 	if(state!=END)
 	{
-		while(!is_empty(sendbuf));	//block until all buffer sent
-		while(last_ack==current_ack);	//block until ACK of last sent DATA recieved
+		unsigned char flag = 1;
+		while(flag)	//block until all buffer sent
+		{
+			pthread_mutex_lock(&sendbuf_mutex);
+			flag = !is_empty(sendbuf);
+			pthread_mutex_unlock(&sendbuf_mutex);
+		}
+		flag = 1;
+		while(flag)	//block until ACK of last sent DATA recieved
+		{
+			pthread_mutex_lock(&info_mutex);
+			if(last_ack!=current_ack) flag = 0;
+			pthread_mutex_unlock(&info_mutex);
+		}
 		pthread_mutex_lock(&info_mutex);
 		state = HS4;						
 		pthread_mutex_unlock(&info_mutex);
@@ -249,27 +261,30 @@ static void *send_thread(){
 	unsigned char packet[MAX_BUF_SIZE+4];
 	unsigned char data[MAX_BUF_SIZE];
 	int len;
-	unsigned int last_ack;
+	unsigned int last_seq;
 	unsigned int seq;					
 	struct timespec abstime;
 	state_t current_state;
 	unsigned char last_type = -1;
 	unsigned char sent_type = -1;
 	ssize_t sendto_retv = 0;
+	unsigned char firstpacket = 1;
+	pthread_mutex_lock(&send_thread_sig_mutex);		//sig_mutext place outside the loop since send thread should be waken only if it is waitng. otherwise important wake may be lost
 	do
 	{
 		//Sleep
 		if(DEBUG)printf("sleep for 1 sec\n");
 		clock_gettime(CLOCK_REALTIME,&abstime);
 		abstime.tv_sec++;							
-		pthread_mutex_lock(&send_thread_sig_mutex);
+		
 		pthread_cond_timedwait(&send_thread_sig,&send_thread_sig_mutex,&abstime);
-		pthread_mutex_unlock(&send_thread_sig_mutex);
+		
 		
 		//Check state
 		pthread_mutex_lock(&info_mutex);
 		last_type = last_recv_type;
 		current_state = state;
+		last_seq = seq;
 		seq = current_ack;
 		pthread_mutex_unlock(&info_mutex);
 		//Send packet
@@ -304,15 +319,16 @@ static void *send_thread(){
 		}
 		else if(current_state==RW)
 		{
-			if( (last_type==SYNACK) || ((last_type==ACK) && (last_ack!=seq)) )	//first packet or new packet
+			if( firstpacket || ((last_type==ACK) && (last_seq!=seq)) )	//first packet or new packet
 			{
-				if(DEBUG)printf("send DATA\n");
+				firstpacket = 0;
+				if(DEBUG)printf("send DATA, last_seq=%d, seq=%d\n",last_seq,seq);
 				//Fetch new packet from buffer
 				if(!is_empty(sendbuf))			//have data to send
 				{
 					pthread_mutex_lock(&sendbuf_mutex);
 					len = buf_size(sendbuf)>1000?1000:buf_size(sendbuf);
-					if(DEBUG)printf("buf_size=%d,DATA len=%d\n",buf_size(sendbuf),len);
+					if(DEBUG)printf("seq=%d,buf_size=%d,DATA len=%d\n",seq,buf_size(sendbuf),len);
 					if(dequeue(sendbuf,data,len))
 					{
 						sent_type = DATA;
@@ -323,16 +339,16 @@ static void *send_thread(){
 				}
 				else			//buffer empty, sleep until app thread mtcp_write() called
 				{	
-					pthread_mutex_lock(&send_thread_sig_mutex);
+					
 					pthread_cond_wait(&send_thread_sig,&send_thread_sig_mutex);		
-					pthread_mutex_unlock(&send_thread_sig_mutex);
+					
 				}
 			}
 			else
 			{
 				//Retransmit
-				if(DEBUG)printf("Retransmit\n");
-				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));
+				if(DEBUG)printf("Retransmit seq=%d\n",seq);
+				sendto_retv = sendto(sockfd,(void *)packet,len+4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));
 			}
 				
 		}
@@ -369,7 +385,7 @@ static void *send_thread(){
 		last_sent_type = sent_type;
 		pthread_mutex_unlock(&info_mutex);	
 	}while(!(current_state==HS4 && sent_type==ACK));
-	
+	pthread_mutex_unlock(&send_thread_sig_mutex);
 	pthread_exit(NULL);
 }
 
@@ -385,7 +401,7 @@ static void *receive_thread(){
 		//Monitor Socket
 		len = recvfrom(sockfd,(void *)packet,MAX_BUF_SIZE+4,0,NULL,NULL);
 		current_type = get_packet_type(packet);
-		if(DEBUG)printf("received packet type: %d\n",current_type);
+		if(DEBUG)printf("received packet type: %d, ack=%d\n",current_type,get_packet_ack(packet));
 		//Check & update state
 		pthread_mutex_lock(&info_mutex);
 		last_ack = current_ack;
