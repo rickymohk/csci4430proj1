@@ -17,7 +17,7 @@
 #define MAX_BUF_SIZE 1024
 #define RECV_BUF_SIZE 268435456
 
-typedef enum {INIT,HS3,RW,HS4,END} state_t;			
+typedef enum {INIT,HS3,RW,HS4,END,NIL} state_t;			
 typedef struct
 {
 	int front,rear;
@@ -29,9 +29,9 @@ typedef struct
 int sockfd;
 struct sockaddr_in *addr;
 
-state_t state;
+state_t state=NIL;
 unsigned int current_ack;
-//unsigned char last_recv_type;
+unsigned char last_recv_type;
 unsigned char last_sent_type;
 ssize_t recvfrom_err = 0;
 
@@ -116,8 +116,8 @@ int dequeue(buffer_t *q,unsigned char *dst, int len)
 /* mtcp functions */
 
 void mtcp_accept(int socket_fd, struct sockaddr_in *client_addr){
-	srand((unsigned)time(NULL));
-	current_ack = rand() & 0x0fffffff;
+	//srand((unsigned)time(NULL));
+	//current_ack = rand() & 0x0fffffff;
 	sockfd = socket_fd;
 	addr = client_addr;
 	state = INIT;
@@ -160,7 +160,7 @@ void mtcp_accept(int socket_fd, struct sockaddr_in *client_addr){
 	return;
 }
 int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
-	if(recvfrom_err==-1)return -1;
+	if(recvfrom_err==-1 || state==NIL || state==END)return -1;
 	if(is_empty(recvbuf))
 	{
 		if(state==HS4)
@@ -187,7 +187,10 @@ int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
 	{
 		len = buf_size(recvbuf);
 	}
+
+	pthread_mutex_lock(&recvbuf_mutex);
 	dequeue(recvbuf,buf,len);
+	pthread_mutex_unlock(&recvbuf_mutex);
 	return len;
 
 	
@@ -202,12 +205,12 @@ int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
 
 void mtcp_close(int socket_fd){
 
-	pthread_join(recv_thread_pid,NULL);
 	pthread_join(send_thread_pid,NULL);
-	close(socket_fd);
+	pthread_join(recv_thread_pid,NULL);
 	pthread_mutex_lock(&info_mutex);
 	state = END;
 	pthread_mutex_unlock(&info_mutex);
+	close(socket_fd);
 	return;
 }
 
@@ -253,24 +256,21 @@ static void *send_thread(){
 		pthread_mutex_lock(&info_mutex);
 		last_type = last_recv_type;
 		current_state = state;
-		seq = get_packet_seq;
+		seq = current_ack;
 		pthread_mutex_unlock(&info_mutex);
 
-		if(current_state==HS3)
+		if(current_state==HS3 && last_type==SYN)
 		{
-			if(last_type==0xff)
-			{
-				//Send SYNACK
-				sent_type = SYNACK;
-				create_packet(packet,SYNACK,seq,NULL,0);
-				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
+			//Send SYNACK
+			sent_type = SYNACK;
+			create_packet(packet,SYNACK,seq,NULL,0);
+			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
 
-				pthread_mutex_lock(&send_thread_sig_mutex);
-				pthread_cond_wait(&send_thread_sig,&send_thread_sig_mutex);
-				pthread_mutex_unlock(&send_thread_sig_mutex);
-
-				
-			}
+			//sleep
+			pthread_mutex_lock(&send_thread_sig_mutex);
+			pthread_cond_wait(&send_thread_sig,&send_thread_sig_mutex);
+			pthread_mutex_unlock(&send_thread_sig_mutex);
+			/*
 			else if(last_type==ACK)
 			{				
 				//Wake app thread cause mtcp_accept() return
@@ -278,25 +278,25 @@ static void *send_thread(){
 				pthread_cond_signal(&app_thread_sig);	
 				pthread_mutex_unlock(&app_thread_sig_mutex);	
 			}
-
+			*/
 		}
-		else if(current_state==RW)
+		else if(current_state==RW && last_type==DATA)
 		{
-			if((last_type==ACK) || (last_type==DATA))
-			{
-				sent_type = ACK;
-				create_packet(packet,ACK,seq,NULL,0);
-				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
-				pthread_mutex_lock(&app_thread_sig_mutex);
-				pthread_cond_signal(&app_thread_sig);	
-				pthread_mutex_unlock(&app_thread_sig_mutex);
-			}
+			sent_type = ACK;
+			create_packet(packet,ACK,seq,NULL,0);
+			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
+
+			//wake app thread in case read() is blocking
+			pthread_mutex_lock(&app_thread_sig_mutex);
+			pthread_cond_signal(&app_thread_sig);	
+			pthread_mutex_unlock(&app_thread_sig_mutex);
 		}
-		else if(current_state==HS4)
+		else if(current_state==HS4 && last_type==FIN)
 		{
 			sent_type = FINACK;
 			create_packet(packet,FINACK,seq,NULL,0);
 			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
+			break;
 		}
 
 	}(current_state!=END);
@@ -322,43 +322,44 @@ static void *receive_thread(){
 		//Check & update state
 		pthread_mutex_lock(&info_mutex);
 		current_state = state;
-//		last_recv_type = current_type;
+		last_recv_type = current_type;
 		last_type = last_sent_type;
 		seq = get_packet_seq(packet);
 		pthread_mutex_unlock(&info_mutex);
 		
 		current_ack = seq + len -3;
-		//wake send thread
-		if(current_type==SYN)								//initiate 3-way handshake
+
+		if(current_state==INIT && current_type==SYN)								//initiated 3-way handshake
 		{
 			pthread_mutex_lock(&info_mutex);
 			state = HS3;
 			pthread_mutex_unlock(&info_mutex);
+
 			pthread_mutex_lock(&send_thread_sig_mutex);
 			pthread_cond_signal(&send_thread_sig);
 			pthread_mutex_unlock(&send_thread_sig_mutex);
 		}		
-		else if(last_type==SYNACK && current_type==ACK)		//finish 3-way handshake
+		else if(current_state==HS3 && last_type==SYNACK && current_type==ACK)		//finish 3-way handshake
 		{
-			pthread_mutex_lock(&info_mutex);
-			state = RW;
-			pthread_mutex_unlock(&info_mutex);		
+			//wake app thread cause mtcp_accept() to return
 			pthread_mutex_lock(&app_thread_sig_mutex);
 			pthread_cond_signal(&app_thread_sig);
 			pthread_mutex_unlock(&app_thread_sig_mutex);	
 		}
-		else if(last_type==ACK && current_type==DATA)		//Read data
+		else if(current_state==RW && last_type==ACK && current_type==DATA)		//Read data
 		{
 			pthread_mutex_lock(&send_thread_sig_mutex);
 			pthread_cond_signal(&send_thread_sig);
-			pthread_mutex_unlock(&send_thread_sig_mutex);			
+			pthread_mutex_unlock(&send_thread_sig_mutex);	
+
 			enqueue(recvbuf,&packet[4],len-4);
 		}
-		else if(current_type==FIN)
+		else if(current_state==RW && current_type==FIN)							//initiated 4-way handshake
 		{
 			pthread_mutex_lock(&info_mutex);
 			state = HS4;
 			pthread_mutex_unlock(&info_mutex);
+
 			pthread_mutex_lock(&send_thread_sig_mutex);
 			pthread_cond_signal(&send_thread_sig);
 			pthread_mutex_unlock(&send_thread_sig_mutex);

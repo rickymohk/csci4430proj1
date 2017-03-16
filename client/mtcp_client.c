@@ -18,7 +18,7 @@
 #define MAX_BUF_SIZE 1024
 #define SEND_BUF_SIZE 268435456
 
-typedef enum {INIT,HS3,RW,HS4,END} state_t;			
+typedef enum {INIT,HS3,RW,HS4,END,NIL} state_t;			
 typedef struct
 {
 	int front,rear;
@@ -30,7 +30,7 @@ typedef struct
 int sockfd;
 struct sockaddr_in *addr;
 
-state_t state;
+state_t state = NIL;
 unsigned int current_ack;
 unsigned char last_recv_type;
 unsigned char last_sent_type;
@@ -163,8 +163,7 @@ void mtcp_connect(int socket_fd, struct sockaddr_in *server_addr){
 
 /* Write Function Call (mtcp Version) */
 int mtcp_write(int socket_fd, unsigned char *buf, int buf_len){
-	if(state==HS4)return 0;
-	if(sendto_err==-1)return -1;
+	if(sendto_err==-1 || state==HS4 || state==NIL || state==END)return -1;
 	pthread_mutex_lock(&sendbuf_mutex);
 	int retv = enqueue(sendbuf,buf,buf_len);
 	pthread_mutex_unlock(&sendbuf_mutex);
@@ -177,7 +176,7 @@ int mtcp_write(int socket_fd, unsigned char *buf, int buf_len){
 	}
 	else
 	{
-		return 0;
+		return 0;			//buffer full
 	}
 
 	return buf_len;
