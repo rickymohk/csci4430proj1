@@ -328,7 +328,7 @@ static void *receive_thread(){
 		seq = get_packet_seq(packet);
 		pthread_mutex_unlock(&info_mutex);
 		
-		current_ack = seq + 1;
+		current_ack = seq + len -3;
 		//wake send thread
 		if(current_type==SYN)								//initiate 3-way handshake
 		{
