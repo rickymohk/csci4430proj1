@@ -35,9 +35,11 @@ struct sockaddr_in server;
 
 state_t state = NIL;
 unsigned int current_ack;
+unsigned int last_ack;
 unsigned char last_recv_type=-1;
 unsigned char last_sent_type=-1;
 ssize_t sendto_err = 0;
+
 
 buffer_t *sendbuf;
 
@@ -197,6 +199,7 @@ void mtcp_close(int socket_fd){
 	if(state!=END)
 	{
 		while(!is_empty(sendbuf));	//block until all buffer sent
+		while(last_ack==current_ack);	//block until ACK of last sent DATA recieved
 		pthread_mutex_lock(&info_mutex);
 		state = HS4;						
 		pthread_mutex_unlock(&info_mutex);
@@ -264,7 +267,6 @@ static void *send_thread(){
 		pthread_mutex_unlock(&send_thread_sig_mutex);
 		
 		//Check state
-		last_ack = seq;
 		pthread_mutex_lock(&info_mutex);
 		last_type = last_recv_type;
 		current_state = state;
@@ -281,6 +283,7 @@ static void *send_thread(){
 				//Send SYN
 				sent_type = SYN;
 				create_packet(packet,SYN,seq,NULL,0);
+
 				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));
 				if(DEBUG)printf("sento_retv=%d,errno=%d\n",sendto_retv,errno);
 
@@ -348,7 +351,7 @@ static void *send_thread(){
 				if(DEBUG)printf("last ACK\n");
 				//Send ACK
 				sent_type = ACK;
-				create_packet(packet,ACK,seq,NULL,0);	
+				create_packet(packet,ACK,seq,NULL,0);
 				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));	
 				
 				//Wake app thread cause mtcp_close() return
@@ -385,6 +388,7 @@ static void *receive_thread(){
 		if(DEBUG)printf("received packet type: %d\n",current_type);
 		//Check & update state
 		pthread_mutex_lock(&info_mutex);
+		last_ack = current_ack;
 		current_state = state;
 		last_recv_type = current_type;
 		last_type = last_sent_type;

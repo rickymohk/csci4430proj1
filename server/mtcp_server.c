@@ -170,7 +170,7 @@ int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
 	if(DEBUG)printf("mtcp_read() no error\n");
 	if(is_empty(recvbuf))
 	{
-		if(DEBUG)printf("reading empty buffer\n");
+		if(DEBUG)printf("reading empty buffer, current_state=%d\n",state);
 		if(state==HS4)
 		{
 			if(DEBUG)printf("mtcp_read return 0\n");
@@ -186,7 +186,7 @@ int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
 		}
 	}
 	int len = 0;
-	if(!is_empty)
+	if(!is_empty(recvbuf))
 	{
 		//copy data from internal buff
 		
@@ -384,13 +384,13 @@ static void *receive_thread(){
 		else if(current_state==RW && (last_type==ACK || last_type==SYNACK) && current_type==DATA)		//Read data
 		{
 			if(DEBUG)printf("received RW data with len=%d\n",len);
-
+			int retv=enqueue(recvbuf,&packet[4],len-4);
+			if(DEBUG)printf("enqueue retv=%d\n",retv);
 			pthread_mutex_lock(&send_thread_sig_mutex);
 			pthread_cond_signal(&send_thread_sig);
 			pthread_mutex_unlock(&send_thread_sig_mutex);	
 
-			int retv=enqueue(recvbuf,&packet[4],len-4);
-			if(DEBUG)printf("enqueue retv=%d\n",retv);
+
 		}
 		else if(current_state==RW && current_type==FIN)							//initiated 4-way handshake
 		{
