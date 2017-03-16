@@ -31,6 +31,7 @@ typedef struct
 /* -------------------- Global Variables -------------------- */
 int sockfd;
 struct sockaddr_in *addr;
+struct sockaddr_in server;
 
 state_t state = NIL;
 unsigned int current_ack;
@@ -83,22 +84,25 @@ int is_full(buffer_t *q)
 
 int buf_size(buffer_t *q)
 {
-	return (q->capacity - q->rear + q->front +1)%q->capacity;
+	if(q->front==-1)return 0;
+	return (q->rear - q->front +1)%q->capacity;
 }
-
+	
 int enqueue(buffer_t *q, unsigned char *src,  int len)
-{
+{	
+	if(DEBUG)printf("is_full=%d,buf_size=%d,capacity=%d\n",is_full(q),buf_size(q),q->capacity);
 	if(is_full(q))return 0;
-	else if(len > buf_size(q))return 0;
+	else if(len > (q->capacity-buf_size(q)))return 0;
 	else
 	{
+		int tmp = buf_size(q);
 		q->rear = (q->rear + len)%q->capacity;
-		memcpy(&q->array[q->rear],src,len);
+		memcpy(&(q->array[q->rear-len+1]),src,len);
 		if(q->front==-1)
 		{
-			q->front = q->rear;
+			q->front = q->rear - len+1;
 		}
-		return 1;
+		return buf_size(q)-tmp;
 	}
 }
 
@@ -107,8 +111,8 @@ int dequeue(buffer_t *q,unsigned char *dst, int len)
 	if(is_empty(q))return 0;
 	else
 	{
-		memcpy(dst,&q->array[q->front],len);
-		if(q->front==q->rear)
+		memcpy(dst,&(q->array[q->front]),len);
+		if(q->front==(q->rear - len+1))
 			q->front=q->rear=-1;
 		else
 			q->front=(q->front + len)%q->capacity;
@@ -121,7 +125,8 @@ void mtcp_connect(int socket_fd, struct sockaddr_in *server_addr){
 	srand((unsigned)time(NULL));
 	current_ack = rand() & 0x0fffffff;
 	sockfd = socket_fd;
-	addr = server_addr;
+	addr = malloc(sizeof(struct sockaddr_in));
+	memcpy(addr,server_addr,sizeof(struct sockaddr_in));
 	state = INIT;
 	sendbuf = create_buffer(SEND_BUF_SIZE);
 	if(!sendbuf)
@@ -165,11 +170,13 @@ void mtcp_connect(int socket_fd, struct sockaddr_in *server_addr){
 
 /* Write Function Call (mtcp Version) */
 int mtcp_write(int socket_fd, unsigned char *buf, int buf_len){
+	if(DEBUG)printf("mtcp_write()\n");
 	if(sendto_err==-1 || state==HS4 || state==NIL || state==END)return -1;
+	if(DEBUG)printf("wrtie no error\n");
 	pthread_mutex_lock(&sendbuf_mutex);
 	int retv = enqueue(sendbuf,buf,buf_len);
 	pthread_mutex_unlock(&sendbuf_mutex);
-	
+	if(DEBUG)printf("enqueue retv=%d\n",retv);
 	if(retv)
 	{
 		pthread_mutex_lock(&send_thread_sig_mutex);
@@ -180,7 +187,7 @@ int mtcp_write(int socket_fd, unsigned char *buf, int buf_len){
 	{
 		return 0;			//buffer full
 	}
-
+	if(DEBUG)printf("mtcp_write() return %d\n",buf_len);
 	return buf_len;
 }
 
@@ -189,6 +196,7 @@ void mtcp_close(int socket_fd){
 	//change state to 4-way handshake
 	if(state!=END)
 	{
+		while(!is_empty(sendbuf));	//block until all buffer sent
 		pthread_mutex_lock(&info_mutex);
 		state = HS4;						
 		pthread_mutex_unlock(&info_mutex);
@@ -204,7 +212,8 @@ void mtcp_close(int socket_fd){
 		state = END;
 		pthread_join(recv_thread_pid,NULL);
 		pthread_join(send_thread_pid,NULL);
-		close(socket_fd);	
+		close(socket_fd);
+		free(addr);	
 		
 	}
 
@@ -300,11 +309,12 @@ static void *send_thread(){
 				{
 					pthread_mutex_lock(&sendbuf_mutex);
 					len = buf_size(sendbuf)>1000?1000:buf_size(sendbuf);
+					if(DEBUG)printf("buf_size=%d,DATA len=%d\n",buf_size(sendbuf),len);
 					if(dequeue(sendbuf,data,len))
 					{
 						sent_type = DATA;
 						create_packet(packet,DATA,seq,data,len);
-						sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));		
+						sendto_retv = sendto(sockfd,(void *)packet,len+4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));		
 					}
 					pthread_mutex_unlock(&sendbuf_mutex);
 				}

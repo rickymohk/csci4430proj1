@@ -5,6 +5,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <errno.h>
 #include "mtcp_server.h"
 
 #define SYN 0
@@ -30,7 +31,8 @@ typedef struct
 /* -------------------- Global Variables -------------------- */
 int sockfd;
 struct sockaddr_in *addr;
-
+socklen_t addrlen;
+struct sockaddr_in *client;
 state_t state=NIL;
 unsigned int current_ack;
 unsigned char last_recv_type;
@@ -82,22 +84,26 @@ int is_full(buffer_t *q)
 
 int buf_size(buffer_t *q)
 {
-	return (q->capacity - q->rear + q->front +1)%q->capacity;
+	if(q->front==-1)return 0;
+	return (q->rear - q->front +1)%q->capacity;
 }
+	
 
 int enqueue(buffer_t *q, unsigned char *src,  int len)
-{
+{	
+	if(DEBUG)printf("is_full=%d,buf_size=%d,capacity=%d\n",is_full(q),buf_size(q),q->capacity);
 	if(is_full(q))return 0;
-	else if(len > buf_size(q))return 0;
+	else if(len > (q->capacity-buf_size(q)))return 0;
 	else
 	{
+		int tmp = buf_size(q);
 		q->rear = (q->rear + len)%q->capacity;
-		memcpy(&q->array[q->rear],src,len);
+		memcpy(&(q->array[q->rear-len+1]),src,len);
 		if(q->front==-1)
 		{
-			q->front = q->rear;
+			q->front = q->rear - len+1;
 		}
-		return 1;
+		return buf_size(q)-tmp;
 	}
 }
 
@@ -106,8 +112,8 @@ int dequeue(buffer_t *q,unsigned char *dst, int len)
 	if(is_empty(q))return 0;
 	else
 	{
-		memcpy(dst,&q->array[q->front],len);
-		if(q->front==q->rear)
+		memcpy(dst,&(q->array[q->front]),len);
+		if(q->front==(q->rear - len+1))
 			q->front=q->rear=-1;
 		else
 			q->front=(q->front + len)%q->capacity;
@@ -156,19 +162,18 @@ void mtcp_accept(int socket_fd, struct sockaddr_in *client_addr){
 	pthread_cond_wait(&app_thread_sig,&app_thread_sig_mutex);
 	pthread_mutex_unlock(&app_thread_sig_mutex);
 
-	//change state to read/write
-	pthread_mutex_lock(&info_mutex);
-	state = RW;													
-	pthread_mutex_unlock(&info_mutex);
 
 	return;
 }
 int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
 	if(recvfrom_err==-1 || state==NIL || state==END)return -1;
+	if(DEBUG)printf("mtcp_read() no error\n");
 	if(is_empty(recvbuf))
 	{
+		if(DEBUG)printf("reading empty buffer\n");
 		if(state==HS4)
 		{
+			if(DEBUG)printf("mtcp_read return 0\n");
 			return 0;
 		}
 		else
@@ -180,21 +185,26 @@ int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
 			pthread_mutex_unlock(&app_thread_sig_mutex);
 		}
 	}
-
-	//copy data from internal buff
 	int len = 0;
-	if(buf_len<buf_size(recvbuf))
+	if(!is_empty)
 	{
-		len = buf_len;
-	}
-	else
-	{
-		len = buf_size(recvbuf);
-	}
+		//copy data from internal buff
+		
+		if(buf_len<buf_size(recvbuf))
+		{
+			len = buf_len;
+		}
+		else
+		{
+			len = buf_size(recvbuf);
+		}
 
-	pthread_mutex_lock(&recvbuf_mutex);
-	dequeue(recvbuf,buf,len);
-	pthread_mutex_unlock(&recvbuf_mutex);
+		pthread_mutex_lock(&recvbuf_mutex);
+		dequeue(recvbuf,buf,len);
+		pthread_mutex_unlock(&recvbuf_mutex);		
+	}
+	
+	if(DEBUG)printf("mtcp_read return %d\n",len);
 	return len;
 
 	
@@ -208,7 +218,7 @@ int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
 }
 
 void mtcp_close(int socket_fd){
-
+if(DEBUG)printf("mtcp_close()\n");
 	pthread_join(send_thread_pid,NULL);
 	pthread_join(recv_thread_pid,NULL);
 	pthread_mutex_lock(&info_mutex);
@@ -270,12 +280,14 @@ static void *send_thread(){
 			if(DEBUG)printf("send SYNACK\n");
 			sent_type = SYNACK;
 			create_packet(packet,SYNACK,seq,NULL,0);
-			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));
-
+			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)client,addrlen);
+			if(DEBUG)printf("sento_retv=%d,errno=%d\n",sendto_retv,errno);
 			//sleep
+/*
 			pthread_mutex_lock(&send_thread_sig_mutex);
 			pthread_cond_wait(&send_thread_sig,&send_thread_sig_mutex);
 			pthread_mutex_unlock(&send_thread_sig_mutex);
+*/
 			/*
 			else if(last_type==ACK)
 			{				
@@ -292,7 +304,7 @@ static void *send_thread(){
 			if(DEBUG)printf("send ACK\n");
 			sent_type = ACK;
 			create_packet(packet,ACK,seq,NULL,0);
-			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));
+			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)client,addrlen);
 
 			//wake app thread in case read() is blocking
 			pthread_mutex_lock(&app_thread_sig_mutex);
@@ -304,14 +316,14 @@ static void *send_thread(){
 			if(DEBUG)printf("send FINACK\n");
 			sent_type = FINACK;
 			create_packet(packet,FINACK,seq,NULL,0);
-			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));
+			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)client,addrlen);
 		}
 		pthread_mutex_lock(&info_mutex);
 		last_sent_type = sent_type;
 		pthread_mutex_unlock(&info_mutex);
 
 	}while(sent_type!=FINACK);
-
+	if(DEBUG)printf("send thread end\n");
 	pthread_exit(NULL);
 }
 
@@ -324,12 +336,13 @@ static void *receive_thread(){
 	unsigned char current_type = -1;
 	unsigned int seq;
 	state_t current_state;
-
+	client = malloc(sizeof(struct sockaddr_in));
+	addrlen = sizeof(struct sockaddr_in);
 	do
 	{
 		if(DEBUG)printf("Monitoring socket\n");
 		//Monitor Socket
-		len = recvfrom(sockfd,(void *)packet,MAX_BUF_SIZE+4,0,NULL,NULL);
+		len = recvfrom(sockfd,(void *)packet,MAX_BUF_SIZE+4,0,(struct sockaddr *)client,&addrlen);
 		current_type = get_packet_type(packet);
 		seq = get_packet_seq(packet);
 		if(DEBUG)printf("received type: %d\n", current_type);
@@ -342,10 +355,12 @@ static void *receive_thread(){
 		recvfrom_err = len;
 		pthread_mutex_unlock(&info_mutex);
 		
-
+		if(DEBUG)printf("current_state=%d,last_type=%d\n",current_state,last_type);
 		if(current_state==INIT && current_type==SYN)								//initiated 3-way handshake
 		{
 			if(DEBUG)printf("start HS3\n");
+			memcpy(addr,client,addrlen);
+			if(DEBUG)printf("sin_family=%d,sin_port=%d,in_addr=%d,addrlen=%d\n",client->sin_family,client->sin_port,client->sin_addr.s_addr,addrlen);
 			pthread_mutex_lock(&info_mutex);
 			state = HS3;
 			pthread_mutex_unlock(&info_mutex);
@@ -357,19 +372,25 @@ static void *receive_thread(){
 		else if(current_state==HS3 && last_type==SYNACK && current_type==ACK)		//finish 3-way handshake
 		{
 			if(DEBUG)printf("finish HS3\n");
+			//change state to read/write
+			pthread_mutex_lock(&info_mutex);
+			state = RW;													
+			pthread_mutex_unlock(&info_mutex);			
 			//wake app thread cause mtcp_accept() to return
 			pthread_mutex_lock(&app_thread_sig_mutex);
 			pthread_cond_signal(&app_thread_sig);
 			pthread_mutex_unlock(&app_thread_sig_mutex);	
 		}
-		else if(current_state==RW && last_type==ACK && current_type==DATA)		//Read data
+		else if(current_state==RW && (last_type==ACK || last_type==SYNACK) && current_type==DATA)		//Read data
 		{
-			if(DEBUG)printf("received RW data\n");
+			if(DEBUG)printf("received RW data with len=%d\n",len);
+
 			pthread_mutex_lock(&send_thread_sig_mutex);
 			pthread_cond_signal(&send_thread_sig);
 			pthread_mutex_unlock(&send_thread_sig_mutex);	
 
-			enqueue(recvbuf,&packet[4],len-4);
+			int retv=enqueue(recvbuf,&packet[4],len-4);
+			if(DEBUG)printf("enqueue retv=%d\n",retv);
 		}
 		else if(current_state==RW && current_type==FIN)							//initiated 4-way handshake
 		{
@@ -385,5 +406,11 @@ static void *receive_thread(){
 
 	}while(!(last_type==FINACK && current_type==ACK));
 
+	//wake app thread in case read() blocking
+	pthread_mutex_lock(&app_thread_sig_mutex);
+	pthread_cond_signal(&app_thread_sig);
+	pthread_mutex_unlock(&app_thread_sig_mutex);
+	free(client);
+	if(DEBUG)printf("recv thread end\n");
 	pthread_exit(NULL);
 }
