@@ -272,7 +272,7 @@ static void *send_thread(){
 				//Send SYN
 				sent_type = SYN;
 				create_packet(packet,SYN,seq,NULL,0);
-				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
+				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));
 				if(DEBUG)printf("sento_retv=%d,errno=%d\n",sendto_retv,errno);
 
 			}
@@ -282,7 +282,7 @@ static void *send_thread(){
 				//Send ACK
 				sent_type = ACK;
 				create_packet(packet,ACK,seq,NULL,0);
-				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
+				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));
 				
 				//Wake app thread cause mtcp_connect() return
 				pthread_mutex_lock(&app_thread_sig_mutex);
@@ -304,7 +304,7 @@ static void *send_thread(){
 					{
 						sent_type = DATA;
 						create_packet(packet,DATA,seq,data,len);
-						sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));		
+						sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));		
 					}
 					pthread_mutex_unlock(&sendbuf_mutex);
 				}
@@ -319,7 +319,7 @@ static void *send_thread(){
 			{
 				//Retransmit
 				if(DEBUG)printf("Retransmit\n");
-				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
+				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));
 			}
 				
 		}
@@ -331,7 +331,7 @@ static void *send_thread(){
 				//Send FIN
 				sent_type = FIN;
 				create_packet(packet,FIN,seq,NULL,0);	
-				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));	
+				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));	
 			}
 			else
 			{
@@ -339,7 +339,7 @@ static void *send_thread(){
 				//Send ACK
 				sent_type = ACK;
 				create_packet(packet,ACK,seq,NULL,0);	
-				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));	
+				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));	
 				
 				//Wake app thread cause mtcp_close() return
 				pthread_mutex_lock(&app_thread_sig_mutex);

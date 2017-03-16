@@ -270,7 +270,7 @@ static void *send_thread(){
 			if(DEBUG)printf("send SYNACK\n");
 			sent_type = SYNACK;
 			create_packet(packet,SYNACK,seq,NULL,0);
-			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
+			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));
 
 			//sleep
 			pthread_mutex_lock(&send_thread_sig_mutex);
@@ -292,7 +292,7 @@ static void *send_thread(){
 			if(DEBUG)printf("send ACK\n");
 			sent_type = ACK;
 			create_packet(packet,ACK,seq,NULL,0);
-			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
+			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));
 
 			//wake app thread in case read() is blocking
 			pthread_mutex_lock(&app_thread_sig_mutex);
@@ -304,7 +304,7 @@ static void *send_thread(){
 			if(DEBUG)printf("send FINACK\n");
 			sent_type = FINACK;
 			create_packet(packet,FINACK,seq,NULL,0);
-			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
+			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));
 		}
 		pthread_mutex_lock(&info_mutex);
 		last_sent_type = sent_type;
