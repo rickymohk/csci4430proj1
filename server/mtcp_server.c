@@ -18,7 +18,7 @@
 #define MAX_BUF_SIZE 1024
 #define RECV_BUF_SIZE 268435456
 
-#define DEBUG 1
+#define DEBUG 0
 
 typedef enum {INIT,HS3,RW,HS4,END,NIL} state_t;			
 typedef struct
