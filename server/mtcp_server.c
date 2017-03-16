@@ -17,6 +17,8 @@
 #define MAX_BUF_SIZE 1024
 #define RECV_BUF_SIZE 268435456
 
+#define DEBUG 1
+
 typedef enum {INIT,HS3,RW,HS4,END,NIL} state_t;			
 typedef struct
 {
@@ -120,7 +122,9 @@ void mtcp_accept(int socket_fd, struct sockaddr_in *client_addr){
 	//current_ack = rand() & 0x0fffffff;
 	sockfd = socket_fd;
 	addr = client_addr;
+	pthread_mutex_lock(&info_mutex);
 	state = INIT;
+	pthread_mutex_unlock(&info_mutex);
 	recvbuf = create_buffer(RECV_BUF_SIZE);
 
 	if(!recvbuf)
@@ -171,9 +175,9 @@ int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
 		{
 			//Wait for data from recv thread
 			//wait for send thread wake signal
-			pthread_mutex_lock(&app_thread_sig);
+			pthread_mutex_lock(&app_thread_sig_mutex);
 			pthread_cond_wait(&app_thread_sig, &app_thread_sig_mutex);
-			pthread_mutex_unlock(&app_thread_sig);
+			pthread_mutex_unlock(&app_thread_sig_mutex);
 		}
 	}
 
@@ -237,13 +241,14 @@ unsigned int get_packet_seq(unsigned char *packet)
 }
 
 static void *send_thread(){
+	if(DEBUG)printf("send_thread created\n");
 	unsigned char packet[MAX_BUF_SIZE+4];
 //	int len;
 //	unsigned int last_ack;
 	unsigned int seq;					
 	state_t current_state;
-	unsigned char last_type = 0xff;
-	unsigned char sent_type = 0xff;
+	unsigned char last_type = -1;
+	unsigned char sent_type = -1;
 	ssize_t sendto_retv = 0;
 	do
 	{
@@ -262,6 +267,7 @@ static void *send_thread(){
 		if(current_state==HS3 && last_type==SYN)
 		{
 			//Send SYNACK
+			if(DEBUG)printf("send SYNACK\n");
 			sent_type = SYNACK;
 			create_packet(packet,SYNACK,seq,NULL,0);
 			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
@@ -282,6 +288,8 @@ static void *send_thread(){
 		}
 		else if(current_state==RW && last_type==DATA)
 		{
+			//Send ACK
+			if(DEBUG)printf("send ACK\n");
 			sent_type = ACK;
 			create_packet(packet,ACK,seq,NULL,0);
 			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
@@ -293,6 +301,7 @@ static void *send_thread(){
 		}
 		else if(current_state==HS4 && last_type==FIN)
 		{
+			if(DEBUG)printf("send FINACK\n");
 			sent_type = FINACK;
 			create_packet(packet,FINACK,seq,NULL,0);
 			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
@@ -307,21 +316,23 @@ static void *send_thread(){
 }
 
 static void *receive_thread(){
+	if(DEBUG)printf("receive_thread created\n");
 	unsigned char packet[MAX_BUF_SIZE+4];
 //	unsigned char data[MAX_BUF_SIZE];
 	ssize_t len;
-	unsigned char last_type = 0xff;
-	unsigned char current_type = 0xff;
+	unsigned char last_type = -1;
+	unsigned char current_type = -1;
 	unsigned int seq;
 	state_t current_state;
 
 	do
 	{
+		if(DEBUG)printf("Monitoring socket\n");
 		//Monitor Socket
 		len = recvfrom(sockfd,(void *)packet,MAX_BUF_SIZE+4,0,NULL,NULL);
 		current_type = get_packet_type(packet);
 		seq = get_packet_seq(packet);
-		
+		if(DEBUG)printf("received type: %d\n", current_type);
 		//Check & update state
 		pthread_mutex_lock(&info_mutex);
 		current_state = state;
@@ -334,6 +345,7 @@ static void *receive_thread(){
 
 		if(current_state==INIT && current_type==SYN)								//initiated 3-way handshake
 		{
+			if(DEBUG)printf("start HS3\n");
 			pthread_mutex_lock(&info_mutex);
 			state = HS3;
 			pthread_mutex_unlock(&info_mutex);
@@ -344,6 +356,7 @@ static void *receive_thread(){
 		}		
 		else if(current_state==HS3 && last_type==SYNACK && current_type==ACK)		//finish 3-way handshake
 		{
+			if(DEBUG)printf("finish HS3\n");
 			//wake app thread cause mtcp_accept() to return
 			pthread_mutex_lock(&app_thread_sig_mutex);
 			pthread_cond_signal(&app_thread_sig);
@@ -351,6 +364,7 @@ static void *receive_thread(){
 		}
 		else if(current_state==RW && last_type==ACK && current_type==DATA)		//Read data
 		{
+			if(DEBUG)printf("received RW data\n");
 			pthread_mutex_lock(&send_thread_sig_mutex);
 			pthread_cond_signal(&send_thread_sig);
 			pthread_mutex_unlock(&send_thread_sig_mutex);	
@@ -359,6 +373,7 @@ static void *receive_thread(){
 		}
 		else if(current_state==RW && current_type==FIN)							//initiated 4-way handshake
 		{
+			if(DEBUG)printf("start HS4\n");
 			pthread_mutex_lock(&info_mutex);
 			state = HS4;
 			pthread_mutex_unlock(&info_mutex);

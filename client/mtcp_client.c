@@ -18,6 +18,8 @@
 #define MAX_BUF_SIZE 1024
 #define SEND_BUF_SIZE 268435456
 
+#define DEBUG 1
+
 typedef enum {INIT,HS3,RW,HS4,END,NIL} state_t;			
 typedef struct
 {
@@ -32,8 +34,8 @@ struct sockaddr_in *addr;
 
 state_t state = NIL;
 unsigned int current_ack;
-unsigned char last_recv_type;
-unsigned char last_sent_type;
+unsigned char last_recv_type=-1;
+unsigned char last_sent_type=-1;
 ssize_t sendto_err = 0;
 
 buffer_t *sendbuf;
@@ -231,6 +233,7 @@ unsigned int get_packet_ack(unsigned char *packet)
 }
 
 static void *send_thread(){
+	if(DEBUG)printf("send_thread created\n");
 	unsigned char packet[MAX_BUF_SIZE+4];
 	unsigned char data[MAX_BUF_SIZE];
 	int len;
@@ -238,12 +241,13 @@ static void *send_thread(){
 	unsigned int seq;					
 	struct timespec abstime;
 	state_t current_state;
-	unsigned char last_type = 0xff;
-	unsigned char sent_type = 0xff;
+	unsigned char last_type = -1;
+	unsigned char sent_type = -1;
 	ssize_t sendto_retv = 0;
 	do
 	{
 		//Sleep
+		if(DEBUG)printf("sleep for 1 sec\n");
 		clock_gettime(CLOCK_REALTIME,&abstime);
 		abstime.tv_sec++;							
 		pthread_mutex_lock(&send_thread_sig_mutex);
@@ -257,19 +261,24 @@ static void *send_thread(){
 		current_state = state;
 		seq = current_ack;
 		pthread_mutex_unlock(&info_mutex);
-		
 		//Send packet
+		if(DEBUG)printf("current_state: %d\n",current_state);
 		if(current_state==HS3)
 		{
-			if(last_type==0xff)
+			if(DEBUG)printf("HS3 state\n");
+			if(last_type==(unsigned char)-1)
 			{
+				if(DEBUG)printf("send SYN\n");
 				//Send SYN
 				sent_type = SYN;
 				create_packet(packet,SYN,seq,NULL,0);
 				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
+				if(DEBUG)printf("sento_retv=%d,errno=%d\n",sendto_retv,errno);
+
 			}
 			else if(last_type==SYNACK)
 			{
+				if(DEBUG)printf("send ACK after SYNACK\n");
 				//Send ACK
 				sent_type = ACK;
 				create_packet(packet,ACK,seq,NULL,0);
@@ -285,6 +294,7 @@ static void *send_thread(){
 		{
 			if( (last_type==SYNACK) || ((last_type==ACK) && (last_ack!=seq)) )	//first packet or new packet
 			{
+				if(DEBUG)printf("send DATA\n");
 				//Fetch new packet from buffer
 				if(!is_empty(sendbuf))			//have data to send
 				{
@@ -308,6 +318,7 @@ static void *send_thread(){
 			else
 			{
 				//Retransmit
+				if(DEBUG)printf("Retransmit\n");
 				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
 			}
 				
@@ -316,6 +327,7 @@ static void *send_thread(){
 		{
 			if(last_type!=FINACK)
 			{
+				if(DEBUG)printf("send FIN\n");
 				//Send FIN
 				sent_type = FIN;
 				create_packet(packet,FIN,seq,NULL,0);	
@@ -323,6 +335,7 @@ static void *send_thread(){
 			}
 			else
 			{
+				if(DEBUG)printf("last ACK\n");
 				//Send ACK
 				sent_type = ACK;
 				create_packet(packet,ACK,seq,NULL,0);	
@@ -333,7 +346,6 @@ static void *send_thread(){
 				pthread_cond_signal(&app_thread_sig);		
 				pthread_mutex_unlock(&app_thread_sig_mutex);		
 				
-				break;
 			}
 			
 		}
@@ -343,23 +355,24 @@ static void *send_thread(){
 		sendto_err = sendto_retv;
 		last_sent_type = sent_type;
 		pthread_mutex_unlock(&info_mutex);	
-	}while(current_state!=END);
+	}while(!(current_state==HS4 && sent_type==ACK));
 	
 	pthread_exit(NULL);
 }
 
 static void *receive_thread(){
+	if(DEBUG)printf("receive_thread created\n");
 	unsigned char packet[MAX_BUF_SIZE+4];
 	ssize_t len;
-	unsigned char last_type = 0xff;
-	unsigned char current_type = 0xff;
+	unsigned char last_type = -1;
+	unsigned char current_type = -1;
 	state_t current_state;
 	do
 	{
 		//Monitor Socket
 		len = recvfrom(sockfd,(void *)packet,MAX_BUF_SIZE+4,0,NULL,NULL);
 		current_type = get_packet_type(packet);
-		
+		if(DEBUG)printf("received packet type: %d\n",current_type);
 		//Check & update state
 		pthread_mutex_lock(&info_mutex);
 		current_state = state;
