@@ -202,13 +202,12 @@ int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
 
 void mtcp_close(int socket_fd){
 
-	pthread_mutex_lock(&info_mutex);
-	state = END;
-	pthread_mutex_unlock(&info_mutex);
 	pthread_join(recv_thread_pid,NULL);
 	pthread_join(send_thread_pid,NULL);
 	close(socket_fd);
-
+	pthread_mutex_lock(&info_mutex);
+	state = END;
+	pthread_mutex_unlock(&info_mutex);
 	return;
 }
 
