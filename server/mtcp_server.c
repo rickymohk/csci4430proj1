@@ -175,6 +175,9 @@ int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
 
 void mtcp_close(int socket_fd){
 
+	pthread_mutex_lock(&info_mutex);
+	state = END;
+	pthread_mutex_unlock(&info_mutex);
 	pthread_join(recv_thread_pid,NULL);
 	pthread_join(send_thread_pid,NULL);
 	close(socket_fd);
@@ -206,11 +209,9 @@ unsigned int get_packet_seq(unsigned char *packet)
 
 static void *send_thread(){
 	unsigned char packet[MAX_BUF_SIZE+4];
-	unsigned char data[MAX_BUF_SIZE];
 	int len;
 	unsigned int last_ack;
 	unsigned int seq;					
-	struct timespec abstime;
 	state_t current_state;
 	unsigned char last_type = 0xff;
 	unsigned char sent_type = 0xff;
@@ -223,45 +224,69 @@ static void *send_thread(){
 		pthread_mutex_unlock(&send_thread_sig_mutex);
 		
 		//Check state
-		last_ack = seq;
 		pthread_mutex_lock(&info_mutex);
 		last_type = last_recv_type;
 		current_state = state;
-		seq = current_ack;
+		seq = get_packet_seq;
 		pthread_mutex_unlock(&info_mutex);
 
 		if(current_state==HS3)
 		{
 			if(last_type==0xff)
 			{
-				//Send SYN
-				sent_type = SYN;
-				create_packet(packet,SYN,seq,NULL,0);
+				//Send SYNACK
+				sent_type = SYNACK;
+				create_packet(packet,SYNACK,seq,NULL,0);
 				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
+
+				pthread_mutex_lock(&send_thread_sig_mutex);
+				pthread_cond_wait(&send_thread_sig,&send_thread_sig_mutex);
+				pthread_mutex_unlock(&send_thread_sig_mutex);
+
+				
 			}
-			else if(last_type==SYNACK)
+			else if(last_type==ACK)
+			{				
+				//Wake app thread cause mtcp_accept() return
+				pthread_mutex_lock(&app_thread_sig_mutex);
+				pthread_cond_signal(&app_thread_sig);	
+				pthread_mutex_unlock(&app_thread_sig_mutex);	
+			}
+
+		}
+		else if(current_state==RW)
+		{
+			if((last_type==ACK) || (last_type==DATA))
 			{
-				//Send ACK
 				sent_type = ACK;
 				create_packet(packet,ACK,seq,NULL,0);
 				sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
-				
-				//Wake app thread cause mtcp_connect() return
 				pthread_mutex_lock(&app_thread_sig_mutex);
 				pthread_cond_signal(&app_thread_sig);	
-				pthread_mutex_unlock(&app_thread_sig_mutex);					
+				pthread_mutex_unlock(&app_thread_sig_mutex);
 			}
 		}
+		else if(current_state==HS4)
+		{
+			sent_type = FINACK;
+			create_packet(packet,FINACK,seq,NULL,0);
+			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
+		}
 
-	}();
+	}(current_state!=END);
+
+	pthread_exit(NULL);
 }
 
 static void *receive_thread(){
 	unsigned char packet[MAX_BUF_SIZE+4];
+	unsigned char data[MAX_BUF_SIZE];
 	size_t len;
-	unsigned char last_type =n 0xff;
+	unsigned char last_type = 0xff;
 	unsigned char current_type = 0xff;
+	unsigned int seq;
 	state_t current_state;
+
 	do
 	{
 		//Monitor Socket
@@ -273,7 +298,9 @@ static void *receive_thread(){
 		current_state = state;
 		last_recv_type = current_type;
 		last_type = last_sent_type;
+		seq = get_packet_seq(packet);
 		current_ack = get_packet_ack(packet);
+
 		pthread_mutex_unlock(&info_mutex);
 		
 		//wake send thread
@@ -281,7 +308,14 @@ static void *receive_thread(){
 		{
 			pthread_mutex_lock(&send_thread_sig_mutex);
 			pthread_cond_signal(&send_thread_sig);
-			pthread_mutex_unlock(&send_thread_sig_mutex);				
+			pthread_mutex_unlock(&send_thread_sig_mutex);
+			memcpy(data[seq], packet[4], len);
+		}
+		else if(current_type==FIN)
+		{
+			pthread_mutex_lock(&send_thread_sig_mutex);
+			pthread_cond_signal(&send_thread_sig);
+			pthread_mutex_unlock(&send_thread_sig_mutex);
 		}
 
 	}while(last_type!=FINACK && current_type!=ACK);
