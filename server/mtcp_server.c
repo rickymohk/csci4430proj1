@@ -238,8 +238,8 @@ unsigned int get_packet_seq(unsigned char *packet)
 
 static void *send_thread(){
 	unsigned char packet[MAX_BUF_SIZE+4];
-	int len;
-	unsigned int last_ack;
+//	int len;
+//	unsigned int last_ack;
 	unsigned int seq;					
 	state_t current_state;
 	unsigned char last_type = 0xff;
@@ -296,10 +296,12 @@ static void *send_thread(){
 			sent_type = FINACK;
 			create_packet(packet,FINACK,seq,NULL,0);
 			sendto_retv = sendto(sockfd,(void *)packet,4,0,(struct sockaddr *)addr,sizeof(addr));
-			break;
 		}
+		pthread_mutex_lock(&info_mutex);
+		last_sent_type = sent_type;
+		pthread_mutex_unlock(&info_mutex);
 
-	}(current_state!=END);
+	}while(sent_type!=FINACK);
 
 	pthread_exit(NULL);
 }
@@ -307,7 +309,7 @@ static void *send_thread(){
 static void *receive_thread(){
 	unsigned char packet[MAX_BUF_SIZE+4];
 //	unsigned char data[MAX_BUF_SIZE];
-	size_t len;
+	ssize_t len;
 	unsigned char last_type = 0xff;
 	unsigned char current_type = 0xff;
 	unsigned int seq;
@@ -318,16 +320,17 @@ static void *receive_thread(){
 		//Monitor Socket
 		len = recvfrom(sockfd,(void *)packet,MAX_BUF_SIZE+4,0,NULL,NULL);
 		current_type = get_packet_type(packet);
+		seq = get_packet_seq(packet);
 		
 		//Check & update state
 		pthread_mutex_lock(&info_mutex);
 		current_state = state;
 		last_recv_type = current_type;
 		last_type = last_sent_type;
-		seq = get_packet_seq(packet);
+		current_ack = seq + len -3;
+		recvfrom_err = len;
 		pthread_mutex_unlock(&info_mutex);
 		
-		current_ack = seq + len -3;
 
 		if(current_state==INIT && current_type==SYN)								//initiated 3-way handshake
 		{

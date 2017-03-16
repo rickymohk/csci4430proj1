@@ -350,7 +350,7 @@ static void *send_thread(){
 
 static void *receive_thread(){
 	unsigned char packet[MAX_BUF_SIZE+4];
-	size_t len;
+	ssize_t len;
 	unsigned char last_type = 0xff;
 	unsigned char current_type = 0xff;
 	state_t current_state;
