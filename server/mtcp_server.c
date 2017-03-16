@@ -31,7 +31,7 @@ struct sockaddr_in *addr;
 
 state_t state;
 unsigned int current_ack;
-unsigned char last_recv_type;
+//unsigned char last_recv_type;
 unsigned char last_sent_type;
 ssize_t recvfrom_err = 0;
 
@@ -113,6 +113,8 @@ int dequeue(buffer_t *q,unsigned char *dst, int len)
 	}
 }
 
+/* mtcp functions */
+
 void mtcp_accept(int socket_fd, struct sockaddr_in *client_addr){
 	srand((unsigned)time(NULL));
 	current_ack = rand() & 0x0fffffff;
@@ -138,13 +140,14 @@ void mtcp_accept(int socket_fd, struct sockaddr_in *client_addr){
 		perror("cannot create receive thread");
 		exit(1);
 	}
-
+/*
 	//change state to 3-way handshake
 	pthread_mutex_lock(&info_mutex);
 	state = HS3;													
 	pthread_mutex_unlock(&info_mutex);
+*/
 
-	//wait until wake signal from send thread
+	//wait until wake signal from recv thread
 	pthread_mutex_lock(&app_thread_sig_mutex);
 	pthread_cond_wait(&app_thread_sig,&app_thread_sig_mutex);
 	pthread_mutex_unlock(&app_thread_sig_mutex);
@@ -157,19 +160,43 @@ void mtcp_accept(int socket_fd, struct sockaddr_in *client_addr){
 	return;
 }
 int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
-	if(state==HS4)return 0;
 	if(recvfrom_err==-1)return -1;
+	if(is_empty(recvbuf))
+	{
+		if(state==HS4)
+		{
+			return 0;
+		}
+		else
+		{
+			//Wait for data from recv thread
+			//wait for send thread wake signal
+			pthread_mutex_lock(&app_thread_sig);
+			pthread_cond_wait(&app_thread_sig, &app_thread_sig_mutex);
+			pthread_mutex_unlock(&app_thread_sig);
+		}
+	}
+
+	//copy data from internal buff
+	int len = 0;
+	if(buf_len<buf_size(recvbuf))
+	{
+		len = buf_len;
+	}
+	else
+	{
+		len = buf_size(recvbuf);
+	}
+	dequeue(recvbuf,buf,len);
+	return len;
+
+	
+/*
 	//wake send thread in case it is waiting
 	pthread_mutex_lock(&send_thread_sig);
 	pthread_cond_signal(&send_thread_sig);
 	pthread_mutex_unlock(&send_thread_sig);
-
-	//wait for send thread wake signal
-	pthread_mutex_lock(&app_thread_sig);
-	pthread_cond_wait(&app_thread_sig, &app_thread_sig_mutex);
-	pthread_mutex_unlock(&app_thread_sig);
-
-	return buf_len;
+*/
 
 }
 
@@ -280,7 +307,7 @@ static void *send_thread(){
 
 static void *receive_thread(){
 	unsigned char packet[MAX_BUF_SIZE+4];
-	unsigned char data[MAX_BUF_SIZE];
+//	unsigned char data[MAX_BUF_SIZE];
 	size_t len;
 	unsigned char last_type = 0xff;
 	unsigned char current_type = 0xff;
@@ -296,29 +323,49 @@ static void *receive_thread(){
 		//Check & update state
 		pthread_mutex_lock(&info_mutex);
 		current_state = state;
-		last_recv_type = current_type;
+//		last_recv_type = current_type;
 		last_type = last_sent_type;
 		seq = get_packet_seq(packet);
-		current_ack = get_packet_ack(packet);
-
 		pthread_mutex_unlock(&info_mutex);
 		
+		current_ack = seq + 1;
 		//wake send thread
-		if((current_type==SYN)||(last_type==ACK && current_type==DATA))
+		if(current_type==SYN)								//initiate 3-way handshake
 		{
+			pthread_mutex_lock(&info_mutex);
+			state = HS3;
+			pthread_mutex_unlock(&info_mutex);
 			pthread_mutex_lock(&send_thread_sig_mutex);
 			pthread_cond_signal(&send_thread_sig);
 			pthread_mutex_unlock(&send_thread_sig_mutex);
-			memcpy(data[seq], packet[4], len);
+		}		
+		else if(last_type==SYNACK && current_type==ACK)		//finish 3-way handshake
+		{
+			pthread_mutex_lock(&info_mutex);
+			state = RW;
+			pthread_mutex_unlock(&info_mutex);		
+			pthread_mutex_lock(&app_thread_sig_mutex);
+			pthread_cond_signal(&app_thread_sig);
+			pthread_mutex_unlock(&app_thread_sig_mutex);	
+		}
+		else if(last_type==ACK && current_type==DATA)		//Read data
+		{
+			pthread_mutex_lock(&send_thread_sig_mutex);
+			pthread_cond_signal(&send_thread_sig);
+			pthread_mutex_unlock(&send_thread_sig_mutex);			
+			enqueue(recvbuf,&packet[4],len-4);
 		}
 		else if(current_type==FIN)
 		{
+			pthread_mutex_lock(&info_mutex);
+			state = HS4;
+			pthread_mutex_unlock(&info_mutex);
 			pthread_mutex_lock(&send_thread_sig_mutex);
 			pthread_cond_signal(&send_thread_sig);
 			pthread_mutex_unlock(&send_thread_sig_mutex);
 		}
 
-	}while(last_type!=FINACK && current_type!=ACK);
+	}while(!(last_type==FINACK && current_type==ACK));
 
 	pthread_exit(NULL);
 }

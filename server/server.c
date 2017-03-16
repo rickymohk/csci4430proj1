@@ -65,7 +65,7 @@ int main(int argc, char **argv){
 
 	while(1){
 		// Receive data through mTCP protocol and write it to file
-		if(mtcp_read(sock_fd, (unsigned char*) buf, MAX_BUF_SIZE) <= 0)
+		if((read_rtn = mtcp_read(sock_fd, (unsigned char*) buf, MAX_BUF_SIZE)) <= 0)
 			break;
 			
 		// Write the file
