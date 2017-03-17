@@ -19,6 +19,7 @@
 #define SEND_BUF_SIZE 268435456
 
 #define DEBUG 0
+#define DEBUG2 0
 
 typedef enum {INIT,HS3,RW,HS4,END,NIL} state_t;			
 typedef struct
@@ -35,7 +36,7 @@ struct sockaddr_in server;
 
 state_t state = NIL;
 unsigned int current_ack;
-unsigned int last_ack;
+unsigned int last_seq;
 unsigned char last_recv_type=-1;
 unsigned char last_sent_type=-1;
 ssize_t sendto_err = 0;
@@ -126,6 +127,7 @@ int dequeue(buffer_t *q,unsigned char *dst, int len)
 void mtcp_connect(int socket_fd, struct sockaddr_in *server_addr){
 	srand((unsigned)time(NULL));
 	current_ack = rand() & 0x0fffffff;
+	//current_ack = 0x0ffffff0;
 	sockfd = socket_fd;
 	addr = malloc(sizeof(struct sockaddr_in));
 	memcpy(addr,server_addr,sizeof(struct sockaddr_in));
@@ -209,7 +211,7 @@ void mtcp_close(int socket_fd){
 		while(flag)	//block until ACK of last sent DATA recieved
 		{
 			pthread_mutex_lock(&info_mutex);
-			if(last_ack!=current_ack) flag = 0;
+			if(last_seq!=current_ack) flag = 0;
 			pthread_mutex_unlock(&info_mutex);
 		}
 		pthread_mutex_lock(&info_mutex);
@@ -277,7 +279,8 @@ static void *send_thread(){
 		clock_gettime(CLOCK_REALTIME,&abstime);
 		abstime.tv_sec++;							
 		
-		pthread_cond_timedwait(&send_thread_sig,&send_thread_sig_mutex,&abstime);
+		int wait_retv = pthread_cond_timedwait(&send_thread_sig,&send_thread_sig_mutex,&abstime);
+		
 		
 		
 		//Check state
@@ -287,6 +290,8 @@ static void *send_thread(){
 		last_seq = seq;
 		seq = current_ack;
 		pthread_mutex_unlock(&info_mutex);
+
+		if(DEBUG2 && wait_retv==ETIMEDOUT)printf("timedout, last_seq=%d, seq=%d\n",last_seq,seq);
 		//Send packet
 		if(DEBUG)printf("current_state: %d\n",current_state);
 		if(current_state==HS3)
@@ -404,7 +409,7 @@ static void *receive_thread(){
 		if(DEBUG)printf("received packet type: %d, ack=%d\n",current_type,get_packet_ack(packet));
 		//Check & update state
 		pthread_mutex_lock(&info_mutex);
-		last_ack = current_ack;
+//		last_ack = current_ack;
 		current_state = state;
 		last_recv_type = current_type;
 		last_type = last_sent_type;
