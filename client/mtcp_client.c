@@ -15,7 +15,8 @@
 #define ACK 4
 #define DATA 5
 
-#define MAX_BUF_SIZE 1024
+#define PKT_BUF_SIZE 1024
+#define MAX_DATA_SIZE 1000
 #define SEND_BUF_SIZE 268435456
 
 #define DEBUG 0
@@ -239,7 +240,7 @@ void mtcp_close(int socket_fd){
 
 void create_packet(unsigned char *packet, unsigned char type, unsigned int seq, unsigned char *data, size_t data_len)
 {
-	memset(packet,0,MAX_BUF_SIZE+4);
+	memset(packet,0,PKT_BUF_SIZE);
 	unsigned int header = htonl(((type & 0xf)<<28) | (seq & 0x0fffffff));
 	*((unsigned int *)packet) = header;
 	if(data)
@@ -260,8 +261,8 @@ unsigned int get_packet_ack(unsigned char *packet)
 
 static void *send_thread(){
 	if(DEBUG)printf("send_thread created\n");
-	unsigned char packet[MAX_BUF_SIZE+4];
-	unsigned char data[MAX_BUF_SIZE];
+	unsigned char packet[PKT_BUF_SIZE];
+	unsigned char data[MAX_DATA_SIZE];
 	int len;
 	unsigned int last_seq;
 	unsigned int seq;					
@@ -332,7 +333,7 @@ static void *send_thread(){
 				if(!is_empty(sendbuf))			//have data to send
 				{
 					pthread_mutex_lock(&sendbuf_mutex);
-					len = buf_size(sendbuf)>1000?1000:buf_size(sendbuf);
+					len = buf_size(sendbuf)>MAX_DATA_SIZE?MAX_DATA_SIZE:buf_size(sendbuf);
 					if(DEBUG)printf("seq=%d,buf_size=%d,DATA len=%d\n",seq,buf_size(sendbuf),len);
 					if(dequeue(sendbuf,data,len))
 					{
@@ -396,7 +397,7 @@ static void *send_thread(){
 
 static void *receive_thread(){
 	if(DEBUG)printf("receive_thread created\n");
-	unsigned char packet[MAX_BUF_SIZE+4];
+	unsigned char packet[PKT_BUF_SIZE];
 	ssize_t len;
 	unsigned char last_type = -1;
 	unsigned char current_type = -1;
@@ -404,7 +405,7 @@ static void *receive_thread(){
 	do
 	{
 		//Monitor Socket
-		len = recvfrom(sockfd,(void *)packet,MAX_BUF_SIZE+4,0,NULL,NULL);
+		len = recvfrom(sockfd,(void *)packet,PKT_BUF_SIZE,0,NULL,NULL);
 		current_type = get_packet_type(packet);
 		if(DEBUG)printf("received packet type: %d, ack=%d\n",current_type,get_packet_ack(packet));
 		//Check & update state

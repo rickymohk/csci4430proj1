@@ -15,7 +15,7 @@
 #define ACK 4
 #define DATA 5
 
-#define MAX_BUF_SIZE 1024
+#define PKT_BUF_SIZE 1024
 #define RECV_BUF_SIZE 268435456
 
 #define DEBUG 0
@@ -237,7 +237,7 @@ if(DEBUG)printf("mtcp_close()\n");
 
 void create_packet(unsigned char *packet, unsigned char type, unsigned int seq, unsigned char *data, size_t data_len)
 {
-	memset(packet,0,MAX_BUF_SIZE+4);
+	memset(packet,0,PKT_BUF_SIZE);
 	unsigned int header = htonl(((type & 0xf)<<28) | (seq & 0x0fffffff));
 	*((unsigned int *)packet) = header;
 	if(data)
@@ -258,7 +258,7 @@ unsigned int get_packet_seq(unsigned char *packet)
 
 static void *send_thread(){
 	if(DEBUG)printf("send_thread created\n");
-	unsigned char packet[MAX_BUF_SIZE+4];
+	unsigned char packet[PKT_BUF_SIZE];
 //	int len;
 //	unsigned int last_ack;
 	unsigned int seq, last_seq;					
@@ -344,8 +344,8 @@ static void *send_thread(){
 
 static void *receive_thread(){
 	if(DEBUG)printf("receive_thread created\n");
-	unsigned char packet[MAX_BUF_SIZE+4];
-//	unsigned char data[MAX_BUF_SIZE];
+	unsigned char packet[PKT_BUF_SIZE];
+//	unsigned char data[MAX_DATA_SIZE];
 	ssize_t len;
 	unsigned char last_type = -1;
 	unsigned char current_type = -1;
@@ -357,7 +357,7 @@ static void *receive_thread(){
 	{
 		if(DEBUG)printf("Monitoring socket\n");
 		//Monitor Socket
-		len = recvfrom(sockfd,(void *)packet,MAX_BUF_SIZE+4,0,(struct sockaddr *)client,&addrlen);
+		len = recvfrom(sockfd,(void *)packet,PKT_BUF_SIZE,0,(struct sockaddr *)client,&addrlen);
 		current_type = get_packet_type(packet);
 		seq = get_packet_seq(packet);
 		if(DEBUG)printf("received type: %d, seq=%d\n", current_type,seq);
