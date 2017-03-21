@@ -203,17 +203,22 @@ void mtcp_close(int socket_fd){
 	//change state to 4-way handshake
 	if(state!=END)
 	{
-		close_flag = 1;
 		pthread_mutex_lock(&app_thread_sig_mutex);
-		if(DEBUG)printf("mtcp_close() waiting for buffer empty and last ack\n");
+	
+		pthread_mutex_lock(&sendbuf_mutex);
+		pthread_mutex_lock(&info_mutex);
+		close_flag = !(is_empty(sendbuf) && last_seq!=current_ack);
+		pthread_mutex_unlock(&info_mutex);
+		pthread_mutex_unlock(&sendbuf_mutex);
 		while(close_flag)	//block until all buffer sent
 		{
+			if(DEBUG)printf("mtcp_close() waiting for buffer empty and last ack\n");
 			pthread_cond_wait(&app_thread_sig,&app_thread_sig_mutex);
+			pthread_mutex_lock(&sendbuf_mutex);
 			pthread_mutex_lock(&info_mutex);
-			//pthread_mutex_lock(&sendbuf_mutex);
 			close_flag = !(is_empty(sendbuf) && last_seq!=current_ack);
-			//pthread_mutex_unlock(&sendbuf_mutex);
 			pthread_mutex_unlock(&info_mutex);
+			pthread_mutex_unlock(&sendbuf_mutex);
 		}
 		pthread_mutex_unlock(&app_thread_sig_mutex);
 
