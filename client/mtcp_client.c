@@ -349,13 +349,6 @@ static void *send_thread(){
 						sendto_retv = sendto(sockfd,(void *)packet,len+4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));		
 					}
 					pthread_mutex_unlock(&sendbuf_mutex);
-					//wake app thread incase mtcp_cloase() is blocking
-					if(close_flag)
-					{
-						pthread_mutex_lock(&app_thread_sig_mutex);
-						pthread_cond_signal(&app_thread_sig);	
-						pthread_mutex_unlock(&app_thread_sig_mutex);
-					}
 				}
 				else			//buffer empty, sleep until app thread mtcp_write() called
 				{	
@@ -369,13 +362,6 @@ static void *send_thread(){
 				//Retransmit
 				if(DEBUG)printf("Retransmit seq=%d\n",seq);
 				sendto_retv = sendto(sockfd,(void *)packet,len+4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));
-				//wake app thread incase mtcp_cloase() is blocking
-				if(close_flag)
-				{
-					pthread_mutex_lock(&app_thread_sig_mutex);
-					pthread_cond_signal(&app_thread_sig);	
-					pthread_mutex_unlock(&app_thread_sig_mutex);
-				}
 			}
 				
 		}
@@ -438,6 +424,13 @@ static void *receive_thread(){
 		last_type = last_sent_type;
 		current_ack = get_packet_ack(packet);
 		pthread_mutex_unlock(&info_mutex);
+		//wake app thread incase mtcp_cloase() is blocking
+		if(close_flag && current_type==ACK)
+		{
+			pthread_mutex_lock(&app_thread_sig_mutex);
+			pthread_cond_signal(&app_thread_sig);	
+			pthread_mutex_unlock(&app_thread_sig_mutex);
+		}
 		
 		//wake send thread
 		if((last_type==SYN && current_type==SYNACK)||(last_type==DATA && current_type==ACK)||(last_type==FIN && current_type==FINACK))
