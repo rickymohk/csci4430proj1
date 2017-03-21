@@ -42,6 +42,8 @@ unsigned char last_recv_type=-1;
 unsigned char last_sent_type=-1;
 ssize_t sendto_err = 0;
 
+unsigned char close_flag = 0;
+
 
 buffer_t *sendbuf;
 
@@ -201,20 +203,26 @@ void mtcp_close(int socket_fd){
 	//change state to 4-way handshake
 	if(state!=END)
 	{
-		unsigned char flag = 1;
-		while(flag)	//block until all buffer sent
+		close_flag = 1;
+		pthread_mutex_lock(&app_thread_sig_mutex);
+		while(close_flag)	//block until all buffer sent
 		{
+			pthread_cond_wait(&app_thread_sig,&app_thread_sig_mutex);
 			pthread_mutex_lock(&sendbuf_mutex);
-			flag = !is_empty(sendbuf);
+			close_flag = !is_empty(sendbuf);
 			pthread_mutex_unlock(&sendbuf_mutex);
 		}
-		flag = 1;
-		while(flag)	//block until ACK of last sent DATA recieved
+		pthread_mutex_unlock(&app_thread_sig_mutex);
+		close_flag = 1;
+		pthread_mutex_lock(&app_thread_sig_mutex);
+		while(close_flag)	//block until ACK of last sent DATA recieved
 		{
+			pthread_cond_wait(&app_thread_sig,&app_thread_sig_mutex);
 			pthread_mutex_lock(&info_mutex);
-			if(last_seq!=current_ack) flag = 0;
+			if(last_seq!=current_ack) close_flag = 0;
 			pthread_mutex_unlock(&info_mutex);
 		}
+		pthread_mutex_unlock(&app_thread_sig_mutex);
 		pthread_mutex_lock(&info_mutex);
 		state = HS4;						
 		pthread_mutex_unlock(&info_mutex);
@@ -341,6 +349,13 @@ static void *send_thread(){
 						sendto_retv = sendto(sockfd,(void *)packet,len+4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));		
 					}
 					pthread_mutex_unlock(&sendbuf_mutex);
+					//wake app thread incase mtcp_cloase() is blocking
+					if(close_flag)
+					{
+						pthread_mutex_lock(&app_thread_sig_mutex);
+						pthread_cond_signal(&app_thread_sig);	
+						pthread_mutex_unlock(&app_thread_sig_mutex);
+					}
 				}
 				else			//buffer empty, sleep until app thread mtcp_write() called
 				{	
@@ -354,6 +369,13 @@ static void *send_thread(){
 				//Retransmit
 				if(DEBUG)printf("Retransmit seq=%d\n",seq);
 				sendto_retv = sendto(sockfd,(void *)packet,len+4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));
+				//wake app thread incase mtcp_cloase() is blocking
+				if(close_flag)
+				{
+					pthread_mutex_lock(&app_thread_sig_mutex);
+					pthread_cond_signal(&app_thread_sig);	
+					pthread_mutex_unlock(&app_thread_sig_mutex);
+				}
 			}
 				
 		}
