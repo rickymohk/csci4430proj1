@@ -19,8 +19,8 @@
 #define MAX_DATA_SIZE 1000
 #define SEND_BUF_SIZE 268435456
 
-#define DEBUG 0
-#define DEBUG2 0
+#define DEBUG 1
+#define DEBUG2 1
 
 typedef enum {INIT,HS3,RW,HS4,END,NIL} state_t;			
 typedef struct
@@ -205,24 +205,16 @@ void mtcp_close(int socket_fd){
 	{
 		close_flag = 1;
 		pthread_mutex_lock(&app_thread_sig_mutex);
+		if(DEBUG)printf("mtcp_close() waiting for buffer empty and last ack\n");
 		while(close_flag)	//block until all buffer sent
 		{
 			pthread_cond_wait(&app_thread_sig,&app_thread_sig_mutex);
 			pthread_mutex_lock(&sendbuf_mutex);
-			close_flag = !is_empty(sendbuf);
+			close_flag = !(is_empty(sendbuf) && last_seq!=current_ack);
 			pthread_mutex_unlock(&sendbuf_mutex);
 		}
 		pthread_mutex_unlock(&app_thread_sig_mutex);
-		close_flag = 1;
-		pthread_mutex_lock(&app_thread_sig_mutex);
-		while(close_flag)	//block until ACK of last sent DATA recieved
-		{
-			pthread_cond_wait(&app_thread_sig,&app_thread_sig_mutex);
-			pthread_mutex_lock(&info_mutex);
-			if(last_seq!=current_ack) close_flag = 0;
-			pthread_mutex_unlock(&info_mutex);
-		}
-		pthread_mutex_unlock(&app_thread_sig_mutex);
+
 		pthread_mutex_lock(&info_mutex);
 		state = HS4;						
 		pthread_mutex_unlock(&info_mutex);
