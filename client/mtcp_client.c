@@ -288,7 +288,6 @@ static void *send_thread(){
 		pthread_mutex_lock(&info_mutex);
 		last_type = last_recv_type;
 		current_state = state;
-		last_seq = seq;
 		seq = current_ack;
 		pthread_mutex_unlock(&info_mutex);
 
@@ -387,6 +386,7 @@ static void *send_thread(){
 		
 		//Update state
 		pthread_mutex_lock(&info_mutex);
+		last_seq = seq;
 		sendto_err = sendto_retv;
 		last_sent_type = sent_type;
 		pthread_mutex_unlock(&info_mutex);	
