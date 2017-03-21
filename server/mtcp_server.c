@@ -19,6 +19,7 @@
 #define RECV_BUF_SIZE 268435456
 
 #define DEBUG 0
+#define DEBUG2 1
 
 typedef enum {INIT,HS3,RW,HS4,END,NIL} state_t;			
 typedef struct
@@ -72,6 +73,13 @@ buffer_t *create_buffer(int size)
 	if(!q->array)return NULL;
 	return q;
 } 
+
+void destroy_buffer(buffer_t *q)
+{
+	free(q->array);
+	free(q);
+	return;
+}
 
 int is_empty(buffer_t *q)
 {
@@ -136,7 +144,7 @@ void mtcp_accept(int socket_fd, struct sockaddr_in *client_addr){
 
 	if(!recvbuf)
 	{
-		perror("cannot create send buffer");
+		perror("cannot create recv buffer");
 		exit(1);
 	}
 
@@ -195,7 +203,8 @@ int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
 	if(!is_empty(recvbuf))
 	{
 		//copy data from internal buff
-		
+
+		pthread_mutex_lock(&recvbuf_mutex);
 		if(buf_len<buf_size(recvbuf))
 		{
 			len = buf_len;
@@ -204,8 +213,6 @@ int mtcp_read(int socket_fd, unsigned char *buf, int buf_len){
 		{
 			len = buf_size(recvbuf);
 		}
-
-		pthread_mutex_lock(&recvbuf_mutex);
 		dequeue(recvbuf,buf,len);
 		pthread_mutex_unlock(&recvbuf_mutex);		
 	}
@@ -230,7 +237,10 @@ if(DEBUG)printf("mtcp_close()\n");
 	pthread_mutex_lock(&info_mutex);
 	state = END;
 	pthread_mutex_unlock(&info_mutex);
+	
+	destroy_buffer(recvbuf);
 	close(socket_fd);
+	if(DEBUG2)printf("socket closed\n");
 	return;
 }
 
@@ -339,7 +349,7 @@ static void *send_thread(){
 	}while(sent_type!=FINACK);
 	pthread_mutex_unlock(&send_thread_sig_mutex);
 	if(DEBUG)printf("send thread end\n");
-	pthread_exit(NULL);
+	return 0;
 }
 
 static void *receive_thread(){
@@ -431,7 +441,7 @@ static void *receive_thread(){
 	pthread_mutex_lock(&app_thread_sig_mutex);
 	pthread_cond_signal(&app_thread_sig);
 	pthread_mutex_unlock(&app_thread_sig_mutex);
-	free(client);
+	//free(client);
 	if(DEBUG)printf("recv thread end\n");
-	pthread_exit(NULL);
+	return 0;
 }
