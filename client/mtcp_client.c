@@ -346,7 +346,10 @@ static void *send_thread(){
 					{
 						sent_type = DATA;
 						create_packet(packet,DATA,seq,data,len);
-						sendto_retv = sendto(sockfd,(void *)packet,len+4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));		
+						sendto_retv = sendto(sockfd,(void *)packet,len+4,0,(struct sockaddr *)addr,sizeof(struct sockaddr));	
+						pthread_mutex_lock(&info_mutex);
+						last_seq = seq;
+						pthread_mutex_unlock(&info_mutex);	
 					}
 					pthread_mutex_unlock(&sendbuf_mutex);
 				}
@@ -394,7 +397,6 @@ static void *send_thread(){
 		
 		//Update state
 		pthread_mutex_lock(&info_mutex);
-		last_seq = seq;
 		sendto_err = sendto_retv;
 		last_sent_type = sent_type;
 		pthread_mutex_unlock(&info_mutex);	
